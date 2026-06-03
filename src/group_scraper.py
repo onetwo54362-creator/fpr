@@ -29,6 +29,7 @@ class GroupScraper:
         html = initial_html or await self.engine.fetch_page_html(url)
         if html:
             self._extract_from_html(html, group)
+            self._classify_group(html, group)
             await self.rate_limiter.on_request_complete()
 
         # About page
@@ -47,7 +48,7 @@ class GroupScraper:
                 self._extract_members(members_html, group)
                 await self.rate_limiter.on_request_complete()
 
-        log.info(f"✅ Group scraped: {group.name} ({group.member_count} members)")
+        log.info(f"✅ Group scraped: {group.name} [{group.group_type}] ({group.member_count} members)")
         return group
 
     def _extract_from_html(self, html: str, group: GroupData):
@@ -110,6 +111,53 @@ class GroupScraper:
                 group.created_at = dt.strftime("%Y-%m-%d")
             except Exception:
                 pass
+
+    def _classify_group(self, html: str, group: GroupData):
+        """Classify group type based on HTML signals and extracted data."""
+        snippet = html[:200000]
+
+        # Unavailable
+        unavailable_signals = [
+            "This content isn't available",
+            "this page isn't available",
+            "The link you followed may be broken",
+            "this group is no longer available",
+        ]
+        for sig in unavailable_signals:
+            if sig.lower() in snippet.lower():
+                group.group_type = "Unavailable Group"
+                return
+
+        # Archived
+        if '"is_archived":true' in snippet or '"ARCHIVED"' in snippet or 'This group has been archived' in snippet:
+            group.group_type = "Archived Group"
+            return
+
+        # Determine from extracted privacy field
+        if group.privacy == "Private":
+            if group.visibility == "Hidden" or '"SECRET"' in snippet:
+                group.group_type = "Hidden Group"
+            else:
+                group.group_type = "Private Group"
+            return
+
+        if group.privacy == "Public":
+            group.group_type = "Public Group"
+            return
+
+        # Fallback detection from HTML
+        if '"SECRET"' in snippet:
+            group.group_type = "Hidden Group"
+            group.privacy = "Private"
+            group.visibility = "Hidden"
+        elif '"CLOSED"' in snippet or '"PRIVATE"' in snippet:
+            group.group_type = "Private Group"
+            group.privacy = "Private"
+        elif '"OPEN"' in snippet or '"PUBLIC"' in snippet:
+            group.group_type = "Public Group"
+            group.privacy = "Public"
+        else:
+            group.group_type = "Public Group"  # default
 
     def _extract_about(self, html: str, group: GroupData):
         # Description (may be more complete on about page)

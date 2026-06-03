@@ -77,6 +77,7 @@ class BusinessHours:
 @dataclass
 class ProfileData:
     entity_type: str = "profile"
+    profile_type: str = ""  # "Public Profile", "Locked Profile", "Private Profile", "Deactivated", "Limited Profile"
     name: str = ""
     username: str = ""
     user_id: str = ""
@@ -113,7 +114,8 @@ class ProfileData:
 
     def to_dataset_dict(self) -> dict:
         return {
-            "entity_type": self.entity_type, "name": self.name, "username": self.username,
+            "entity_type": self.entity_type, "profile_type": self.profile_type,
+            "name": self.name, "username": self.username,
             "user_id": self.user_id, "profile_url": self.profile_url,
             "profile_picture_url": self.profile_picture_url, "cover_photo_url": self.cover_photo_url,
             "verified": self.verified, "bio": self.bio, "intro": self.intro,
@@ -140,7 +142,7 @@ class ProfileData:
         }
 
     def to_excel_row(self) -> list:
-        return [self.entity_type, self.name, self.username, self.user_id, self.profile_url,
+        return [self.entity_type, self.profile_type, self.name, self.username, self.user_id, self.profile_url,
                 self.verified, self.bio, self.intro,
                 "; ".join(w.to_str() for w in self.work),
                 "; ".join(e.to_str() for e in self.education),
@@ -162,6 +164,7 @@ class ProfileData:
 @dataclass
 class GroupData:
     entity_type: str = "group"
+    group_type: str = ""  # "Public Group", "Private Group", "Hidden Group", "Archived Group"
     name: str = ""
     group_id: str = ""
     group_url: str = ""
@@ -185,7 +188,8 @@ class GroupData:
 
     def to_dataset_dict(self) -> dict:
         return {
-            "entity_type": self.entity_type, "name": self.name, "group_id": self.group_id,
+            "entity_type": self.entity_type, "group_type": self.group_type,
+            "name": self.name, "group_id": self.group_id,
             "group_url": self.group_url, "description": self.description,
             "cover_photo_url": self.cover_photo_url, "privacy": self.privacy,
             "visibility": self.visibility, "join_mode": self.join_mode,
@@ -200,7 +204,7 @@ class GroupData:
         }
 
     def to_excel_row(self) -> list:
-        return [self.entity_type, self.name, self.group_id, self.group_url, self.description,
+        return [self.entity_type, self.group_type, self.name, self.group_id, self.group_url, self.description,
                 self.privacy, self.visibility, self.join_mode,
                 self.member_count, self.posts_per_day, self.posts_per_month, self.created_at,
                 "; ".join(a.to_str() for a in self.admins),
@@ -215,6 +219,7 @@ class GroupData:
 @dataclass
 class PageData:
     entity_type: str = "page"
+    page_type: str = ""  # "Public Page", "Verified Page", "Business Page", "Community Page", "Unpublished Page"
     name: str = ""
     page_id: str = ""
     page_url: str = ""
@@ -260,7 +265,8 @@ class PageData:
 
     def to_dataset_dict(self) -> dict:
         return {
-            "entity_type": self.entity_type, "name": self.name, "page_id": self.page_id,
+            "entity_type": self.entity_type, "page_type": self.page_type,
+            "name": self.name, "page_id": self.page_id,
             "page_url": self.page_url, "username": self.username, "category": self.category,
             "sub_categories": self.sub_categories,
             "profile_picture_url": self.profile_picture_url, "cover_photo_url": self.cover_photo_url,
@@ -286,7 +292,7 @@ class PageData:
         }
 
     def to_excel_row(self) -> list:
-        return [self.entity_type, self.name, self.page_id, self.page_url, self.username,
+        return [self.entity_type, self.page_type, self.name, self.page_id, self.page_url, self.username,
                 self.category, "; ".join(self.sub_categories), self.verified,
                 self.description, self.short_description, self.mission, self.company_overview,
                 self.founded, self.products, self.phone, self.email, self.website,
@@ -304,7 +310,7 @@ class PageData:
 # Excel Headers
 # =============================================================================
 PROFILE_EXCEL_HEADERS = [
-    "Type", "Name", "Username", "User ID", "Profile URL", "Verified", "Bio", "Intro",
+    "Type", "Profile Type", "Name", "Username", "User ID", "Profile URL", "Verified", "Bio", "Intro",
     "Work", "Education", "Current City", "Hometown", "Places Lived",
     "Relationship Status", "Significant Other", "Family Members",
     "Phone Numbers", "Emails", "Websites", "Social Links",
@@ -314,7 +320,7 @@ PROFILE_EXCEL_HEADERS = [
 ]
 
 GROUP_EXCEL_HEADERS = [
-    "Type", "Name", "Group ID", "Group URL", "Description",
+    "Type", "Group Type", "Name", "Group ID", "Group URL", "Description",
     "Privacy", "Visibility", "Join Mode",
     "Member Count", "Posts/Day", "Posts/Month", "Created At",
     "Admins", "Moderators", "Members Scraped",
@@ -322,7 +328,7 @@ GROUP_EXCEL_HEADERS = [
 ]
 
 PAGE_EXCEL_HEADERS = [
-    "Type", "Name", "Page ID", "Page URL", "Username",
+    "Type", "Page Type", "Name", "Page ID", "Page URL", "Username",
     "Category", "Sub-Categories", "Verified",
     "Description", "Short Description", "Mission", "Company Overview",
     "Founded", "Products", "Phone", "Email", "Website", "Additional Websites",

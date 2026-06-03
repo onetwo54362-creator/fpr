@@ -26,13 +26,16 @@ class ProfileScraper:
         html = initial_html or await self.engine.fetch_page_html(url)
         if html:
             self._extract_from_html(html, profile)
+            self._classify_profile(html, profile)
             await self.rate_limiter.on_request_complete()
 
-        # Scrape about sections
-        if self.scrape_about:
+        # Scrape about sections (skip for locked/deactivated profiles)
+        if self.scrape_about and profile.profile_type not in ("Locked Profile", "Deactivated Profile", "Unavailable Profile"):
             await self._scrape_about_sections(url, username, profile)
+            # Re-classify after getting more data
+            self._reclassify_after_about(profile)
 
-        log.info(f"✅ Profile scraped: {profile.name} (ID: {profile.user_id})")
+        log.info(f"✅ Profile scraped: {profile.name} [{profile.profile_type}] (ID: {profile.user_id})")
         return profile
 
     def _extract_from_html(self, html: str, profile: ProfileData):
@@ -102,6 +105,87 @@ class ProfileScraper:
         m = re.search(r'"gender"\s*:\s*"(MALE|FEMALE|CUSTOM)"', html, re.IGNORECASE)
         if m:
             profile.gender = m.group(1).capitalize()
+
+    def _classify_profile(self, html: str, profile: ProfileData):
+        """Classify profile access level based on HTML signals."""
+        snippet = html[:200000]
+
+        # Deactivated / unavailable
+        deactivated_signals = [
+            "This content isn't available",
+            "this page isn't available",
+            "The link you followed may be broken",
+            "this account has been deactivated",
+            '"is_deactivated":true',
+        ]
+        for sig in deactivated_signals:
+            if sig.lower() in snippet.lower():
+                profile.profile_type = "Deactivated Profile"
+                return
+
+        # Content not available (deleted/banned)
+        if "Sorry, this content isn" in snippet or "content isn\u2019t available" in snippet:
+            profile.profile_type = "Unavailable Profile"
+            return
+
+        # Locked profile indicators
+        locked_signals = [
+            '"is_profile_locked":true',
+            '"profile_locked":true',
+            '"is_locked":true',
+            'profile_lock_section',
+            'ProfileLockSection',
+            'ProfileLockedContent',
+            '"lockProfileOverride"',
+            'This profile is locked',
+        ]
+        locked_count = sum(1 for sig in locked_signals if sig in snippet)
+        if locked_count >= 1:
+            profile.profile_type = "Locked Profile"
+            return
+
+        # Private profile (limited visibility)
+        private_signals = [
+            '"is_private":true',
+            '"timeline_visibility":"SELF"',
+            '"privacy":"SELF"',
+            '"visibility":"SELF"',
+        ]
+        private_count = sum(1 for sig in private_signals if sig in snippet)
+        if private_count >= 1:
+            profile.profile_type = "Private Profile"
+            return
+
+        # Limited profile (some sections hidden)
+        limited_signals = [
+            '"profileTabSections":[]',
+            '"timeline_sections":[]',
+            '"about_count":0',
+        ]
+        limited_count = sum(1 for sig in limited_signals if sig in snippet)
+        if limited_count >= 1:
+            profile.profile_type = "Limited Profile"
+            return
+
+        # Default: public
+        profile.profile_type = "Public Profile"
+
+    def _reclassify_after_about(self, profile: ProfileData):
+        """Re-check classification after about sections are scraped."""
+        if profile.profile_type == "Public Profile":
+            # If we got almost no data from a supposedly public profile, it's likely limited
+            has_work = len(profile.work) > 0
+            has_education = len(profile.education) > 0
+            has_city = bool(profile.current_city)
+            has_hometown = bool(profile.hometown)
+            has_contact = len(profile.phone_numbers) > 0 or len(profile.emails) > 0
+            has_relationship = bool(profile.relationship_status)
+            has_bio = bool(profile.bio)
+
+            data_points = sum([has_work, has_education, has_city, has_hometown,
+                               has_contact, has_relationship, has_bio])
+            if data_points == 0 and profile.name:
+                profile.profile_type = "Limited Profile"
 
     async def _scrape_about_sections(self, base_url: str, username: str, profile: ProfileData):
         """Scrape individual about section pages."""

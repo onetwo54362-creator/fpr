@@ -25,6 +25,7 @@ class PageScraper:
         html = initial_html or await self.engine.fetch_page_html(url)
         if html:
             self._extract_from_html(html, page)
+            self._classify_page(html, page)
             await self.rate_limiter.on_request_complete()
 
         if self.scrape_about:
@@ -34,7 +35,7 @@ class PageScraper:
                 self._extract_about(about_html, page)
                 await self.rate_limiter.on_request_complete()
 
-        log.info(f"✅ Page scraped: {page.name} (likes: {page.likes_count}, followers: {page.followers_count})")
+        log.info(f"✅ Page scraped: {page.name} [{page.page_type}] (likes: {page.likes_count}, followers: {page.followers_count})")
         return page
 
     def _extract_from_html(self, html: str, page: PageData):
@@ -140,6 +141,68 @@ class PageScraper:
             m = re.search(r'"vanity"\s*:\s*"([^"]+)"', html)
             if m:
                 page.username = m.group(1)
+
+    def _classify_page(self, html: str, page: PageData):
+        """Classify page type based on HTML signals."""
+        snippet = html[:200000]
+
+        # Unavailable
+        unavailable_signals = [
+            "This content isn't available",
+            "this page isn't available",
+            "The link you followed may be broken",
+            "this page has been removed",
+        ]
+        for sig in unavailable_signals:
+            if sig.lower() in snippet.lower():
+                page.page_type = "Unavailable Page"
+                return
+
+        # Unpublished
+        if '"is_published":false' in snippet or '"isPublished":false' in snippet or 'Unpublished' in snippet:
+            page.page_type = "Unpublished Page"
+            return
+
+        # Verified
+        is_verified = page.verified or '"is_verified":true' in snippet or '"isVerified":true' in snippet
+
+        # Business page detection
+        business_signals = [
+            '"hours"', '"price_range"', '"restaurant_specialties"',
+            '"restaurant_services"', '"parking"', '"payment_options"',
+            '"business"', '"LocalBusiness"',
+        ]
+        business_count = sum(1 for sig in business_signals if sig in snippet)
+
+        # Community page
+        community_signals = [
+            '"COMMUNITY"', '"community_page"', 'Community Organization',
+            '"Interest"', '"Cause"',
+        ]
+        community_count = sum(1 for sig in community_signals if sig in snippet)
+
+        # Government / Official
+        official_signals = [
+            'Government', '"GOVERNMENT"', 'Political Organization',
+            'Political Party', 'Public Figure',
+        ]
+        official_count = sum(1 for sig in official_signals if sig in snippet)
+
+        # Classify with priority
+        if official_count >= 1 and is_verified:
+            page.page_type = "Verified Official Page"
+        elif is_verified and business_count >= 2:
+            page.page_type = "Verified Business Page"
+        elif is_verified:
+            page.page_type = "Verified Page"
+        elif business_count >= 2:
+            page.page_type = "Business Page"
+        elif community_count >= 1:
+            page.page_type = "Community Page"
+        elif official_count >= 1:
+            page.page_type = "Official Page"
+        else:
+            page.page_type = "Public Page"
 
     def _extract_about(self, html: str, page: PageData):
         # Phone
