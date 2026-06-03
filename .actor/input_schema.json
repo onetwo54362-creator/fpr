@@ -1,0 +1,88 @@
+{
+    "title": "Facebook Profile, Group & Page Details Scraper",
+    "description": "Scrapes comprehensive metadata from Facebook profiles, groups, and pages.",
+    "type": "object",
+    "schemaVersion": 1,
+    "required": ["cookies"],
+    "properties": {
+        "targetUrls": {
+            "title": "Target URLs",
+            "type": "string",
+            "description": "Facebook profile, group, or page URLs — one per line.\n\nSupported:\n• https://www.facebook.com/username\n• https://www.facebook.com/profile.php?id=123456\n• https://www.facebook.com/groups/groupname\n• https://www.facebook.com/pagename",
+            "editor": "textarea",
+            "prefill": ""
+        },
+        "cookies": {
+            "title": "Facebook Cookies",
+            "type": "string",
+            "description": "Your Facebook session cookies (must contain c_user and xs).\n\nFormats: JSON array, JSON object, Netscape, or header string.",
+            "editor": "textarea",
+            "isSecret": true
+        },
+        "fbDtsg": {
+            "title": "fb_dtsg Token (Optional)",
+            "type": "string",
+            "description": "Facebook CSRF token. Leave blank to auto-fetch.",
+            "editor": "textfield",
+            "isSecret": true,
+            "nullable": true
+        },
+        "scrapeAbout": {
+            "title": "Scrape About Sections",
+            "type": "boolean",
+            "description": "Scrape detailed About section data.",
+            "default": true
+        },
+        "scrapeMembers": {
+            "title": "Scrape Group Members",
+            "type": "boolean",
+            "description": "For groups: scrape the member list.",
+            "default": false
+        },
+        "maxMembers": {
+            "title": "Max Members",
+            "type": "integer",
+            "description": "Max group members to scrape (0 = unlimited).",
+            "default": 100,
+            "minimum": 0
+        },
+        "minBatchSize": {
+            "title": "Min Batch Size",
+            "type": "integer",
+            "default": 2,
+            "minimum": 1
+        },
+        "maxBatchSize": {
+            "title": "Max Batch Size",
+            "type": "integer",
+            "default": 5,
+            "minimum": 1
+        },
+        "minCooldownSeconds": {
+            "title": "Min Cooldown (s)",
+            "type": "number",
+            "default": 3,
+            "minimum": 0.5
+        },
+        "maxCooldownSeconds": {
+            "title": "Max Cooldown (s)",
+            "type": "number",
+            "default": 10,
+            "minimum": 1
+        },
+        "proxyUrl": {
+            "title": "Proxy URL",
+            "type": "string",
+            "description": "HTTP proxy (e.g. http://user:pass@proxy:port).",
+            "editor": "textfield",
+            "isSecret": true,
+            "nullable": true
+        },
+        "excelExport": {
+            "title": "Export to Excel",
+            "type": "boolean",
+            "description": "Generate formatted .xlsx file.",
+            "default": true
+        }
+    }
+}

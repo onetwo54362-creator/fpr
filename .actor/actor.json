@@ -1,0 +1,38 @@
+{
+    "actorSpecification": 1,
+    "name": "facebook-profile-group-page-scraper",
+    "title": "Facebook Profile, Group & Page Details Scraper",
+    "description": "Scrapes comprehensive metadata from Facebook personal profiles, groups, and pages.",
+    "version": "1.0.0",
+    "meta": { "templateId": "python-start" },
+    "input": "./input_schema.json",
+    "dockerfile": "../Dockerfile",
+    "storages": {
+        "dataset": {
+            "actorSpecification": 1,
+            "title": "Scraped Details",
+            "views": {
+                "overview": {
+                    "title": "All Results",
+                    "transformation": {
+                        "fields": ["entity_type","name","profile_url","page_url","group_url","followers_count","friends_count","member_count","likes_count"]
+                    },
+                    "display": {
+                        "component": "table",
+                        "properties": {
+                            "entity_type": {"label": "Type", "format": "text"},
+                            "name": {"label": "Name", "format": "text"},
+                            "profile_url": {"label": "Profile URL", "format": "link"},
+                            "page_url": {"label": "Page URL", "format": "link"},
+                            "group_url": {"label": "Group URL", "format": "link"},
+                            "followers_count": {"label": "Followers", "format": "number"},
+                            "friends_count": {"label": "Friends", "format": "number"},
+                            "member_count": {"label": "Members", "format": "number"},
+                            "likes_count": {"label": "Likes", "format": "number"}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
