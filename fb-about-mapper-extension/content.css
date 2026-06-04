@@ -1,0 +1,5 @@
+/* Content script styles for highlight overlays */
+.fb-mapper-highlight {
+  pointer-events: none !important;
+  z-index: 99999 !important;
+}
