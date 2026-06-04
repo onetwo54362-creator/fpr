@@ -1,407 +1,369 @@
-"""Facebook page details scraper.
+"""Page scraper using Facebook's embedded profile_fields JSON structure.
 
-Uses directory_* about section URLs (same as profiles) to extract page metadata.
+Extracts data from each directory_* about section by parsing the structured
+JSON in <script type="application/json"> tags, same approach as profile_scraper.
 """
 
 from __future__ import annotations
+
+import json
 import logging
 import re
+
 from .graphql_engine import GraphQLEngine
+from .models import BusinessHours, PageData
 from .rate_limiter import RateLimiter
-from .models import PageData, BusinessHours
 
 log = logging.getLogger(__name__)
 
 INVALID_NAMES = {
-    "WAWebOpusRecorderWorkerBundle", "WebWizRecorderWorkerBundle",
-    "WAWebWorkerBundle", "CometMediaViewerPhoto", "CometFeed",
-    "RelayModern", "CometSinglePostRoute", "ProfileCometTimelineRoute",
-    "", "Facebook", "undefined", "null",
+    'WAWebOpusRecorderWorkerBundle', 'WebWizRecorderWorkerBundle',
+    'WAWebWorkerBundle', 'CometMediaViewerPhoto', 'CometFeed',
+    'RelayModern', 'MAWMainV4WebWorkerBundle', 'BlobStorageWorkerBundle',
+    'ZenonSignalingSharedWorkerV2Bundle', 'Facebook', '', 'undefined', 'null',
+    'About', 'Intro', 'Mentions',
 }
+
+ABOUT_SECTIONS = [
+    'directory_intro', 'directory_category', 'directory_personal_details',
+    'directory_basic_info', 'directory_links', 'directory_specialties',
+    'directory_offers', 'directory_work', 'directory_education',
+    'directory_activites', 'directory_interests', 'directory_travel',
+    'directory_contact_info', 'directory_privacy_and_legal_info',
+    'directory_names', 'directory_communities',
+]
 
 
 class PageScraper:
-    def __init__(self, engine: GraphQLEngine, rate_limiter: RateLimiter, scrape_about: bool = True):
+    """Scrapes Facebook page details."""
+
+    def __init__(self, engine: GraphQLEngine, rate_limiter: RateLimiter,
+                 scrape_about: bool = True, **kwargs):
         self.engine = engine
         self.rate_limiter = rate_limiter
         self.scrape_about = scrape_about
 
-    async def scrape(self, url: str, page_id: str = "", username: str = "", initial_html: str = "") -> PageData:
-        log.info(f"📄 Scraping page: {url}")
-        page = PageData(page_id=page_id, page_url=url, username=username)
+    async def scrape(self, url: str, page_id: str = '', username: str = '',
+                     initial_html: str = '') -> PageData:
+        page = PageData(page_id=page_id, username=username, page_url=url)
 
         html = initial_html or await self.engine.fetch_page_html(url)
         if html:
-            self._extract_from_html(html, page)
+            self._extract_basic(html, page)
             self._classify_page(html, page)
             await self.rate_limiter.on_request_complete()
 
-        if self.scrape_about:
-            await self._scrape_about_sections(page)
+        if self.scrape_about and page.page_type not in ('Unavailable Page', 'Unpublished Page'):
+            await self._scrape_all_about_sections(page)
 
-        log.info(f"✅ Page scraped: {page.name} [{page.page_type}] (likes: {page.likes_count}, followers: {page.followers_count})")
         return page
 
-    def _extract_from_html(self, html: str, page: PageData):
-        """Extract page data from the main page HTML."""
-        # ── Name ──
-        self._extract_name(html, page)
+    # =========================================================================
+    # Basic extraction
+    # =========================================================================
+    def _extract_basic(self, html: str, page: PageData):
+        # --- Name ---
+        m = re.search(r'<title[^>]*>([^<]+)</title>', html)
+        if m:
+            name = m.group(1).strip()
+            for sfx in (' | Facebook', ' - Facebook', ' \u2014 Facebook', ' \u00b7 Facebook'):
+                name = name.replace(sfx, '')
+            if name and name not in INVALID_NAMES and not name.startswith('WAWeb'):
+                page.name = name
 
-        # ── Page ID ──
+        if not page.name:
+            m = re.search(r'property="og:title"\s+content="([^"]+)"', html)
+            if not m:
+                m = re.search(r'content="([^"]+)"\s+property="og:title"', html)
+            if m:
+                name = m.group(1).replace(' | Facebook', '').replace(' - Facebook', '').strip()
+                if name and name not in INVALID_NAMES:
+                    page.name = name
+
+        # --- Page ID ---
         if not page.page_id:
-            for p in [r'"pageID"\s*:\s*"(\d+)"', r'"page_id"\s*:\s*"(\d+)"',
-                      r'"ownerID"\s*:\s*"(\d+)"', r'"entity_id"\s*:\s*"(\d+)"']:
-                m = re.search(p, html)
-                if m:
+            c_user = ''
+            if hasattr(self.engine, 'cookies') and isinstance(self.engine.cookies, dict):
+                c_user = self.engine.cookies.get('c_user', '')
+            for pat in [r'"pageID"\s*:\s*"(\d+)"', r'"page_id"\s*:\s*"(\d+)"',
+                        r'"userID"\s*:\s*"(\d+)"', r'"entity_id"\s*:\s*"(\d+)"']:
+                m = re.search(pat, html)
+                if m and m.group(1) != c_user:
                     page.page_id = m.group(1)
                     break
 
-        # ── Category ──
-        for p in [r'"category_name"\s*:\s*"([^"]+)"', r'"category"\s*:\s*"([^"]+)"',
-                  r'"category_type"\s*:\s*"([^"]+)"']:
-            m = re.search(p, html)
+        # --- Category ---
+        m = re.search(r'"category_name"\s*:\s*"([^"]+)"', html)
+        if not m:
+            m = re.search(r'"category_type"\s*:\s*"([^"]+)"', html)
+        if m:
+            page.category = _unescape(m.group(1))
+
+        # --- Profile picture ---
+        m = re.search(r'"profile_picture_for_sticky_bar"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"', html)
+        if m:
+            page.profile_picture_url = m.group(1).replace('\\/', '/')
+        elif not page.profile_picture_url:
+            m = re.search(r'property="og:image"\s+content="([^"]+)"', html)
             if m:
-                cat = _unescape(m.group(1))
-                if cat not in INVALID_NAMES:
-                    page.category = cat
-                    break
+                page.profile_picture_url = m.group(1)
 
-        # ── Sub-categories ──
-        for m in re.finditer(r'"sub_category"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"', html):
-            page.sub_categories.append(_unescape(m.group(1)))
+        # --- Cover photo ---
+        m = re.search(r'"coverPhoto"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"', html)
+        if not m:
+            m = re.search(r'"cover_photo"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"', html)
+        if m:
+            page.cover_photo_url = m.group(1).replace('\\/', '/')
 
-        # ── Verified ──
+        # --- Verified ---
         if '"is_verified":true' in html or '"isVerified":true' in html:
             page.verified = True
 
-        # ── Profile picture ──
-        for p in [r'"profilePicLarge"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"',
-                  r'meta\s+property="og:image"\s+content="([^"]+)"']:
-            m = re.search(p, html)
-            if m:
-                page.profile_picture_url = m.group(1).replace("\\/", "/")
-                break
-
-        # ── Cover photo ──
-        m = re.search(r'"coverPhoto"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"', html)
+        # --- Likes ---
+        m = re.search(r'"page_likers"\s*:\s*\{\s*"count"\s*:\s*(\d+)', html)
         if m:
-            page.cover_photo_url = m.group(1).replace("\\/", "/")
+            page.likes_count = int(m.group(1))
 
-        # ── Likes ──
-        for p in [r'"page_likers"\s*:\s*\{[^}]*"count"\s*:\s*(\d+)',
-                  r'"follower_count"\s*:\s*(\d+).*?"page_likers"',
-                  r'"text"\s*:\s*"([\d,.KMB]+)\s+(?:people like|likes?)"']:
-            m = re.search(p, html, re.IGNORECASE)
-            if m:
-                page.likes_count = _parse_count(m.group(1))
-                break
-
-        # ── Followers ──
-        for p in [r'"follower_count"\s*:\s*(\d+)',
-                  r'"text"\s*:\s*"([\d,.KMB]+)\s+(?:people follow|followers?)"']:
-            m = re.search(p, html, re.IGNORECASE)
+        # --- Followers ---
+        m = re.search(r'"follower_count"\s*:\s*(\d+)', html)
+        if m:
+            page.followers_count = int(m.group(1))
+        if not page.followers_count:
+            m = re.search(r'"text"\s*:\s*"([\d,.KMB]+)\s+followers?"', html, re.IGNORECASE)
             if m:
                 page.followers_count = _parse_count(m.group(1))
-                break
 
-        # ── Check-ins ──
-        for p in [r'"checkins"\s*:\s*\{[^}]*"count"\s*:\s*(\d+)',
-                  r'"text"\s*:\s*"([\d,.]+)\s+(?:were here|check-?ins?)"']:
-            m = re.search(p, html, re.IGNORECASE)
-            if m:
-                page.checkins_count = _parse_count(m.group(1))
-                break
+        # --- Checkins ---
+        m = re.search(r'"checkin_count"\s*:\s*(\d+)', html)
+        if not m:
+            m = re.search(r'"checkins"\s*:\s*\{\s*"count"\s*:\s*(\d+)', html)
+        if m:
+            page.checkins_count = int(m.group(1))
 
-        # ── Rating ──
+        # --- Rating ---
         m = re.search(r'"overall_star_rating"\s*:\s*([\d.]+)', html)
         if m:
             page.rating = float(m.group(1))
+
+        # --- Review count ---
         m = re.search(r'"rating_count"\s*:\s*(\d+)', html)
         if m:
             page.review_count = int(m.group(1))
 
-        # ── Talking about ──
+        # --- Talking about ---
         m = re.search(r'"talking_about_count"\s*:\s*(\d+)', html)
         if m:
             page.talking_about_count = int(m.group(1))
 
-        # ── Description / bio ──
-        m = re.search(r'"page_about_fields"\s*:\s*\{[^}]*"blurb"\s*:\s*"([^"]+)"', html)
-        if m:
-            page.short_description = _unescape(m.group(1))
-        m = re.search(r'"description"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]{10,})"', html)
-        if m:
-            page.description = _unescape(m.group(1))
-
-        # ── Username ──
+        # --- Username ---
         if not page.username:
             m = re.search(r'"vanity"\s*:\s*"([^"]+)"', html)
-            if m:
+            if not m:
+                m = re.search(r'"username"\s*:\s*"([^"]+)"', html)
+            if m and m.group(1):
                 page.username = m.group(1)
 
-    def _extract_name(self, html: str, page: PageData):
-        """Extract real page name from <title>, og:title, and typed objects."""
-        candidates = []
-
-        m = re.search(r'<title[^>]*>([^<]+)</title>', html)
-        if m:
-            name = m.group(1).strip()
-            for suffix in [" | Facebook", " - Facebook", " — Facebook", " · Facebook"]:
-                name = name.replace(suffix, "")
-            if name:
-                candidates.append(name.strip())
-
-        m = re.search(r'<meta\s+(?:property|name)="og:title"\s+content="([^"]+)"', html)
-        if not m:
-            m = re.search(r'content="([^"]+)"\s+(?:property|name)="og:title"', html)
-        if m:
-            name = m.group(1).replace(" | Facebook", "").replace(" - Facebook", "").strip()
-            if name:
-                candidates.append(name)
-
-        m = re.search(r'"__typename"\s*:\s*"Page"[^}]*"name"\s*:\s*"([^"]{2,100})"', html)
-        if m:
-            candidates.append(m.group(1))
-
-        for name in candidates:
-            name = _unescape(name)
-            if name and name not in INVALID_NAMES and not name.startswith("WAWeb"):
-                page.name = name
-                return
-
-    def _classify_page(self, html: str, page: PageData):
-        """Classify page type."""
-        snippet = html[:200000]
-
-        unavail = ["This content isn't available", "this page isn't available",
-                   "The link you followed may be broken", "this page has been removed"]
-        for sig in unavail:
-            if sig.lower() in snippet.lower():
-                page.page_type = "Unavailable Page"
-                return
-
-        if '"is_published":false' in snippet or '"isPublished":false' in snippet:
-            page.page_type = "Unpublished Page"
-            return
-
-        is_verified = page.verified
-        business_count = sum(1 for s in ['"hours"', '"price_range"', '"restaurant_specialties"',
-                                         '"business"', '"LocalBusiness"'] if s in snippet)
-        community_count = sum(1 for s in ['"COMMUNITY"', '"community_page"', 'Community Organization'] if s in snippet)
-        official_count = sum(1 for s in ['Government', 'Political Organization', 'Public Figure'] if s in snippet)
-
-        if official_count >= 1 and is_verified:
-            page.page_type = "Verified Official Page"
-        elif is_verified and business_count >= 2:
-            page.page_type = "Verified Business Page"
-        elif is_verified:
-            page.page_type = "Verified Page"
-        elif business_count >= 2:
-            page.page_type = "Business Page"
-        elif community_count >= 1:
-            page.page_type = "Community Page"
-        else:
-            page.page_type = "Public Page"
-
-    # =========================================================================
-    # About Section Scraping — uses directory_* URLs (same as profiles)
-    # =========================================================================
-    async def _scrape_about_sections(self, page: PageData):
-        """Scrape about details using directory_* URLs."""
-        identifier = page.username or page.page_id
-        if not identifier:
-            return
-
-        sections = [
-            ("directory_intro", self._parse_intro),
-            ("directory_contact_info", self._parse_contact),
-            ("directory_basic_info", self._parse_basic_info),
-            ("directory_links", self._parse_links),
-            ("directory_category", self._parse_category),
-            ("directory_personal_details", self._parse_details),
-        ]
-
-        for section_key, parser in sections:
-            if page.page_id and page.page_id.isdigit():
-                section_url = f"https://www.facebook.com/profile.php?id={page.page_id}&sk={section_key}"
-            else:
-                section_url = f"https://www.facebook.com/{identifier}/{section_key}"
-
-            try:
-                html = await self.engine.fetch_page_html(section_url)
-                if html:
-                    parser(html, page)
-                    await self.rate_limiter.on_request_complete()
-                await self.rate_limiter.section_delay()
-            except Exception as e:
-                log.warning(f"  ⚠️ Failed {section_key}: {e}")
-
-        # Also try the classic /about page
-        about_url = f"https://www.facebook.com/{identifier}/about"
-        try:
-            html = await self.engine.fetch_page_html(about_url)
-            if html:
-                self._parse_about_page(html, page)
-                await self.rate_limiter.on_request_complete()
-        except Exception as e:
-            log.warning(f"  ⚠️ Failed about page: {e}")
-
-    def _parse_intro(self, html: str, page: PageData):
-        """Parse intro section for description/mission."""
-        texts = _extract_all_text_values(html)
-        for t in texts:
-            if len(t) > 20:
-                if not page.description:
-                    page.description = t
-                elif t != page.description and not page.mission and len(t) > 30:
-                    page.mission = t
-
-    def _parse_contact(self, html: str, page: PageData):
-        """Parse contact info."""
-        # Phone
-        if not page.phone:
-            m = re.search(r'"text"\s*:\s*"(\+?[\d\s\-\(\)]{7,20})"', html)
-            if m:
-                page.phone = m.group(1).strip()
-            else:
-                m = re.search(r'"phone"\s*:\s*"([^"]+)"', html)
-                if m:
-                    page.phone = m.group(1)
-
-        # Email
-        if not page.email:
-            m = re.search(r'"text"\s*:\s*"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})"', html)
-            if m:
-                page.email = m.group(1)
-
-        # Website
-        if not page.website:
-            m = re.search(r'"website"\s*:\s*"([^"]+)"', html)
-            if m:
-                page.website = m.group(1).replace("\\/", "/")
-
-        # Address
-        addr_parts = []
-        for key in ["street", "city", "state", "zip", "country"]:
-            m = re.search(rf'"(?:address_)?{key}"\s*:\s*"([^"]+)"', html)
-            if m:
-                val = _unescape(m.group(1))
-                setattr(page, f"address_{key}" if key != "country" else "address_country", val)
-                addr_parts.append(val)
-        if addr_parts and not page.full_address:
-            page.full_address = ", ".join(addr_parts)
-
-        # Coordinates
-        m = re.search(r'"latitude"\s*:\s*([\d.\-]+)', html)
+        # --- Latitude/Longitude ---
+        m = re.search(r'"latitude"\s*:\s*([\d.-]+)', html)
         if m:
             page.latitude = float(m.group(1))
-        m = re.search(r'"longitude"\s*:\s*([\d.\-]+)', html)
+        m = re.search(r'"longitude"\s*:\s*([\d.-]+)', html)
         if m:
             page.longitude = float(m.group(1))
 
-    def _parse_basic_info(self, html: str, page: PageData):
-        """Parse basic info (hours, price range, founded, etc)."""
-        # Hours
-        day_map = {"mon": "monday", "tue": "tuesday", "wed": "wednesday",
-                   "thu": "thursday", "fri": "friday", "sat": "saturday", "sun": "sunday"}
-        hours_found = {}
-        for m in re.finditer(r'"(mon|tue|wed|thu|fri|sat|sun)\w*"\s*:\s*"([^"]+)"', html, re.IGNORECASE):
-            day_key = m.group(1).lower()[:3]
-            if day_key in day_map:
-                hours_found[day_map[day_key]] = m.group(2)
-        if hours_found:
-            bh = BusinessHours(**hours_found)
-            page.hours = bh
-
-        for key, attr in [("price_range", "price_range"), ("founded", "founded"),
-                          ("mission", "mission"), ("company_overview", "company_overview"),
-                          ("products", "products"), ("impressum", "impressum")]:
-            if not getattr(page, attr):
-                m = re.search(rf'"{key}"\s*:\s*"([^"]+)"', html)
-                if m:
-                    setattr(page, attr, _unescape(m.group(1)))
-
-    def _parse_links(self, html: str, page: PageData):
-        """Parse links section."""
-        urls = re.findall(r'"url"\s*:\s*"(https?://[^"]+)"', html)
-        for u in urls:
-            u = u.replace("\\/", "/")
-            if "facebook.com" in u or "fbcdn" in u:
-                continue
-            if "instagram.com" in u.lower() and not page.instagram_url:
-                page.instagram_url = u
-            elif "twitter.com" in u.lower() or "x.com" in u.lower():
-                if not page.twitter_url:
-                    page.twitter_url = u
-            elif u not in page.additional_websites and u != page.website:
-                page.additional_websites.append(u)
-
-        # WhatsApp
-        m = re.search(r'"whatsapp_number"\s*:\s*"([^"]+)"', html)
+        # --- Description from og:description ---
+        m = re.search(r'property="og:description"\s+content="([^"]+)"', html)
+        if not m:
+            m = re.search(r'content="([^"]+)"\s+property="og:description"', html)
         if m:
-            page.whatsapp_number = m.group(1)
+            desc = _unescape(m.group(1))
+            if desc and len(desc) > 10:
+                page.description = desc
 
-    def _parse_category(self, html: str, page: PageData):
-        """Parse category page for sub-categories."""
-        cats = re.findall(r'"category_name"\s*:\s*"([^"]+)"', html)
-        for c in cats:
-            c = _unescape(c)
-            if c and c not in INVALID_NAMES and c not in page.sub_categories and c != page.category:
-                page.sub_categories.append(c)
+    # =========================================================================
+    # Classification
+    # =========================================================================
+    def _classify_page(self, html: str, page: PageData):
+        snippet = html[:200000]
+        s_lower = snippet.lower()
 
-    def _parse_details(self, html: str, page: PageData):
-        """Parse personal details / additional info."""
-        texts = _extract_all_text_values(html)
-        for t in texts:
-            if len(t) > 20 and not _is_boilerplate(t):
-                if not page.description and len(t) > 50:
-                    page.description = t
+        if "this page isn't available" in s_lower or "this content isn't available" in s_lower:
+            page.page_type = 'Unavailable Page'
+            return
+        if '"is_published":false' in snippet:
+            page.page_type = 'Unpublished Page'
+            return
 
-    def _parse_about_page(self, html: str, page: PageData):
-        """Parse the classic /about page for any remaining fields."""
-        # Fill in gaps from the classic about page
-        if not page.description:
-            m = re.search(r'"description"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]{10,})"', html)
-            if m:
-                page.description = _unescape(m.group(1))
+        is_verified = page.verified
+        is_business = any(k in snippet for k in ['"is_business_page":true', 'BusinessPage',
+                                                  '"page_type":"BUSINESS"'])
+        is_community = '"is_community_page":true' in snippet or 'CommunityPage' in snippet
 
-        if not page.phone:
-            m = re.search(r'"phone"\s*:\s*"([^"]+)"', html)
-            if m:
-                page.phone = m.group(1)
+        if is_verified and is_business:
+            page.page_type = 'Verified Business Page'
+        elif is_verified:
+            page.page_type = 'Verified Page'
+        elif is_business:
+            page.page_type = 'Business Page'
+        elif is_community:
+            page.page_type = 'Community Page'
+        else:
+            page.page_type = 'Public Page'
 
-        if not page.email:
-            m = re.search(r'"email"\s*:\s*"([^"]+)"', html)
-            if m:
-                page.email = m.group(1)
+    # =========================================================================
+    # About section scraping
+    # =========================================================================
+    async def _scrape_all_about_sections(self, page: PageData):
+        for section_key in ABOUT_SECTIONS:
+            if page.page_id and page.page_id.isdigit():
+                url = f'https://www.facebook.com/profile.php?id={page.page_id}&sk={section_key}'
+            elif page.username:
+                url = f'https://www.facebook.com/{page.username}/{section_key}'
+            else:
+                continue
 
-        if not page.website:
-            m = re.search(r'"website"\s*:\s*"([^"]+)"', html)
-            if m:
-                page.website = m.group(1).replace("\\/", "/")
+            try:
+                html = await self.engine.fetch_page_html(url)
+                if html:
+                    self._extract_profile_fields(html, page, section_key)
+                    await self.rate_limiter.on_request_complete()
+                await self.rate_limiter.section_delay()
+            except Exception as e:
+                log.warning(f'  \u26a0\ufe0f Failed {section_key}: {e}')
+
+    # =========================================================================
+    # Core JSON extraction
+    # =========================================================================
+    def _extract_profile_fields(self, html: str, page: PageData, section_key: str):
+        all_fields = _parse_profile_fields_json(html)
+
+        for field in all_fields:
+            if not isinstance(field, dict):
+                continue
+
+            ft = field.get('field_type', '')
+            title_text, content_text = _get_field_texts(field)
+            value = _unescape(title_text or content_text)
+            if not value:
+                continue
+
+            # ── Map to PageData ──
+            if ft == 'bio' and not page.short_description:
+                page.short_description = value
+            elif ft == 'description' and not page.description:
+                page.description = value
+            elif ft == 'category' and not page.category:
+                page.category = value
+            elif ft == 'current_city' and not page.address_city:
+                page.address_city = value
+            elif ft == 'address':
+                if not page.full_address:
+                    page.full_address = value
+            elif ft == 'website':
+                if not page.website:
+                    page.website = value
+                elif value not in page.additional_websites and value != page.website:
+                    page.additional_websites.append(value)
+            elif ft == 'phone' and not page.phone:
+                page.phone = value
+            elif ft in ('email_address', 'email') and not page.email:
+                if '@' in value:
+                    page.email = value
+            elif ft == 'screenname':
+                val_lower = value.lower()
+                if 'instagram' in val_lower or 'instagram' in content_text.lower():
+                    if not page.instagram_url:
+                        page.instagram_url = value
+                elif 'twitter' in val_lower or 'x.com' in val_lower:
+                    if not page.twitter_url:
+                        page.twitter_url = value
+                elif 'whatsapp' in val_lower:
+                    if not page.whatsapp_number:
+                        page.whatsapp_number = value
+            elif ft == 'impressum' and not page.impressum:
+                page.impressum = value
+            elif ft == 'founded' and not page.founded:
+                page.founded = value
+            elif ft == 'mission' and not page.mission:
+                page.mission = value
+            elif ft == 'company_overview' and not page.company_overview:
+                page.company_overview = value
+            elif ft == 'products' and not page.products:
+                page.products = value
+            elif ft == 'price_range' and not page.price_range:
+                page.price_range = value
+            elif ft == 'hours':
+                if not page.hours:
+                    page.hours = BusinessHours()
+                _parse_hours(value, page.hours)
 
 
 # =============================================================================
-# Utility functions
+# Shared helpers
 # =============================================================================
 
-def _extract_all_text_values(html: str) -> list[str]:
-    results = []
-    for m in re.finditer(r'"text"\s*:\s*"([^"]{3,500})"', html):
-        text = _unescape(m.group(1))
-        if text and not _is_boilerplate(text):
-            results.append(text)
-    return results
+def _parse_profile_fields_json(html: str) -> list[dict]:
+    all_fields = []
+
+    for m in re.finditer(r'"profile_fields"\s*:\s*\{\s*"nodes"\s*:\s*\[', html):
+        start = m.end() - 1
+        depth = 0
+        i = start
+        limit = min(len(html), start + 80000)
+        while i < limit:
+            if html[i] == '[':
+                depth += 1
+            elif html[i] == ']':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        nodes = json.loads(html[start:i + 1])
+                        all_fields.extend(nodes)
+                    except json.JSONDecodeError:
+                        pass
+                    break
+            i += 1
+
+    if not all_fields:
+        for m in re.finditer(r'"field_type"\s*:\s*"([^"]+)"', html):
+            field_type = m.group(1)
+            ctx_start = max(0, m.start() - 500)
+            ctx_end = min(len(html), m.end() + 2000)
+            context = html[ctx_start:ctx_end]
+
+            title_m = re.search(r'"title"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]+)"', context)
+            text_m = re.search(r'"text_content"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]+)"', context)
+
+            title_text = title_m.group(1) if title_m else ''
+            content_text = text_m.group(1) if text_m else ''
+
+            if title_text or content_text:
+                all_fields.append({
+                    'field_type': field_type,
+                    'title': {'text': title_text},
+                    'text_content': {'text': content_text} if content_text else None,
+                })
+
+    return all_fields
 
 
-def _is_boilerplate(text: str) -> bool:
-    boilerplate = ["See more", "See less", "Like", "Comment", "Share",
-                   "Log in", "Sign up", "Privacy Policy", "Terms of Service",
-                   "WAWeb", "RelayModern", "CometFeed", "Anyone can see"]
-    return any(bp.lower() == text.lower() or text.startswith(bp) for bp in boilerplate)
+def _get_field_texts(field: dict) -> tuple[str, str]:
+    title_text = ''
+    content_text = ''
+    title = field.get('title')
+    if isinstance(title, dict):
+        title_text = title.get('text', '')
+    elif isinstance(title, str):
+        title_text = title
+    tc = field.get('text_content')
+    if isinstance(tc, dict) and tc:
+        content_text = tc.get('text', '')
+    return title_text, content_text
 
 
 def _unescape(text: str) -> str:
+    if not text:
+        return ''
     try:
         return text.encode().decode('unicode_escape', errors='ignore')
     except Exception:
@@ -409,10 +371,25 @@ def _unescape(text: str) -> str:
 
 
 def _parse_count(text: str) -> int:
-    text = text.replace(",", "").strip()
+    text = text.replace(',', '').strip()
     mult = 1
-    if text.upper().endswith("K"): mult, text = 1000, text[:-1]
-    elif text.upper().endswith("M"): mult, text = 1000000, text[:-1]
-    elif text.upper().endswith("B"): mult, text = 1000000000, text[:-1]
-    try: return int(float(text) * mult)
-    except ValueError: return 0
+    if text.upper().endswith('K'):
+        mult, text = 1000, text[:-1]
+    elif text.upper().endswith('M'):
+        mult, text = 1_000_000, text[:-1]
+    elif text.upper().endswith('B'):
+        mult, text = 1_000_000_000, text[:-1]
+    try:
+        return int(float(text) * mult)
+    except ValueError:
+        return 0
+
+
+def _parse_hours(value: str, hours: BusinessHours):
+    val_lower = value.lower()
+    day_map = {'mon': 'monday', 'tue': 'tuesday', 'wed': 'wednesday',
+               'thu': 'thursday', 'fri': 'friday', 'sat': 'saturday', 'sun': 'sunday'}
+    for abbr, attr in day_map.items():
+        if abbr in val_lower and not getattr(hours, attr):
+            setattr(hours, attr, value)
+            return

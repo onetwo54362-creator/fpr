@@ -1,435 +1,407 @@
-"""Facebook personal profile details scraper.
+"""Profile scraper using Facebook's embedded profile_fields JSON structure.
 
-Uses directory_* about section URLs to extract comprehensive profile data.
+Extracts data from each directory_* about section by parsing the structured
+JSON in <script type="application/json"> tags. Each section contains
+"profile_fields":{"nodes":[...]} with field_type identifiers.
 """
 
 from __future__ import annotations
+
+import json
 import logging
 import re
+from typing import Optional
+
 from .graphql_engine import GraphQLEngine
+from .models import Education, FamilyMember, ProfileData, WorkExperience
 from .rate_limiter import RateLimiter
-from .models import ProfileData, WorkExperience, Education, FamilyMember
 
 log = logging.getLogger(__name__)
 
-# Facebook internal module names that incorrectly match "name" regex
+# Facebook internal module names that appear as "name" keys — never a real person
 INVALID_NAMES = {
-    "WAWebOpusRecorderWorkerBundle", "WebWizRecorderWorkerBundle",
-    "WAWebWorkerBundle", "CometMediaViewerPhoto", "CometFeed",
-    "RelayModern", "CometSinglePostRoute", "ProfileCometTimelineRoute",
-    "", "Facebook", "undefined", "null",
+    'WAWebOpusRecorderWorkerBundle', 'WebWizRecorderWorkerBundle',
+    'WAWebWorkerBundle', 'CometMediaViewerPhoto', 'CometFeed',
+    'RelayModern', 'MAWMainV4WebWorkerBundle', 'BlobStorageWorkerBundle',
+    'ZenonSignalingSharedWorkerV2Bundle', 'Facebook', '', 'undefined', 'null',
+    'About', 'Intro', 'Mentions',
 }
+
+# Sections to crawl for about data
+ABOUT_SECTIONS = [
+    'directory_intro', 'directory_category', 'directory_personal_details',
+    'directory_basic_info', 'directory_links', 'directory_specialties',
+    'directory_offers', 'directory_work', 'directory_education',
+    'directory_activites', 'directory_interests', 'directory_travel',
+    'directory_contact_info', 'directory_privacy_and_legal_info',
+    'directory_names', 'directory_communities',
+]
 
 
 class ProfileScraper:
-    def __init__(self, engine: GraphQLEngine, rate_limiter: RateLimiter, scrape_about: bool = True):
+    """Scrapes Facebook profile pages for comprehensive personal data."""
+
+    def __init__(self, engine: GraphQLEngine, rate_limiter: RateLimiter,
+                 scrape_about: bool = True, **kwargs):
         self.engine = engine
         self.rate_limiter = rate_limiter
         self.scrape_about = scrape_about
 
-    async def scrape(self, url: str, username: str, user_id: str = "", initial_html: str = "") -> ProfileData:
-        log.info(f"👤 Scraping profile: {url}")
+    async def scrape(self, url: str, username: str = '',
+                     user_id: str = '', initial_html: str = '') -> ProfileData:
+        """Main entry point — scrape a profile URL."""
         profile = ProfileData(username=username, user_id=user_id, profile_url=url)
 
-        # Extract from initial HTML
+        # Step 1: Fetch main page
         html = initial_html or await self.engine.fetch_page_html(url)
         if html:
-            self._extract_from_html(html, profile)
+            self._extract_basic(html, profile)
             self._classify_profile(html, profile)
             await self.rate_limiter.on_request_complete()
 
-        # Scrape about sections (skip for locked/deactivated)
-        if self.scrape_about and profile.profile_type not in ("Locked Profile", "Deactivated Profile", "Unavailable Profile"):
-            await self._scrape_about_sections(profile)
-            self._reclassify_after_about(profile)
+        # Step 2: Scrape all about sections
+        skip_types = ('Locked Profile', 'Deactivated Profile', 'Unavailable Profile')
+        if self.scrape_about and profile.profile_type not in skip_types:
+            await self._scrape_all_about_sections(profile)
+            self._reclassify(profile)
 
-        log.info(f"✅ Profile scraped: {profile.name} [{profile.profile_type}] (ID: {profile.user_id})")
         return profile
 
-    def _extract_from_html(self, html: str, profile: ProfileData):
-        """Extract profile data from the main profile page HTML."""
-        # ── Name: use <title> and og:title (most reliable) ──
-        self._extract_name(html, profile)
+    # =========================================================================
+    # Basic info extraction from main page HTML
+    # =========================================================================
+    def _extract_basic(self, html: str, profile: ProfileData):
+        """Extract name, ID, pictures, gender, counts from the main page."""
+        # --- Name from <title> ---
+        m = re.search(r'<title[^>]*>([^<]+)</title>', html)
+        if m:
+            name = m.group(1).strip()
+            for sfx in (' | Facebook', ' - Facebook', ' \u2014 Facebook', ' \u00b7 Facebook'):
+                name = name.replace(sfx, '')
+            if name and name not in INVALID_NAMES and not name.startswith('WAWeb'):
+                profile.name = name
 
-        # ── User ID ──
+        # --- Fallback: og:title ---
+        if not profile.name:
+            m = re.search(r'property="og:title"\s+content="([^"]+)"', html)
+            if not m:
+                m = re.search(r'content="([^"]+)"\s+property="og:title"', html)
+            if m:
+                name = m.group(1).replace(' | Facebook', '').replace(' - Facebook', '').strip()
+                if name and name not in INVALID_NAMES:
+                    profile.name = name
+
+        # --- User ID ---
         if not profile.user_id:
-            for p in [r'"userID"\s*:\s*"(\d+)"', r'"user_id"\s*:\s*"(\d+)"',
-                      r'"profile_owner"\s*:\s*\{[^}]*"id"\s*:\s*"(\d+)"',
-                      r'"ownerID"\s*:\s*"(\d+)"', r'"actorID"\s*:\s*"(\d+)"',
-                      r'"entity_id"\s*:\s*"(\d+)"']:
-                m = re.search(p, html)
-                if m and m.group(1) != self.engine.cookies.get("c_user", ""):
+            c_user = ''
+            if hasattr(self.engine, 'cookies') and isinstance(self.engine.cookies, dict):
+                c_user = self.engine.cookies.get('c_user', '')
+            for pat in [r'"userID"\s*:\s*"(\d+)"', r'"user_id"\s*:\s*"(\d+)"',
+                        r'"ownerID"\s*:\s*"(\d+)"', r'"pageID"\s*:\s*"(\d+)"',
+                        r'"entity_id"\s*:\s*"(\d+)"']:
+                m = re.search(pat, html)
+                if m and m.group(1) != c_user:
                     profile.user_id = m.group(1)
                     break
 
-        # ── Profile picture ──
-        for p in [r'"profilePicLarge"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"',
-                  r'"profilePhoto"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"',
-                  r'"profile_picture"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"',
-                  r'meta\s+property="og:image"\s+content="([^"]+)"']:
-            m = re.search(p, html)
-            if m:
-                profile.profile_picture_url = m.group(1).replace("\\/", "/")
-                break
-
-        # ── Cover photo ──
-        m = re.search(r'"coverPhoto"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"', html)
+        # --- Profile picture ---
+        m = re.search(r'"profile_picture_for_sticky_bar"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"', html)
         if m:
-            profile.cover_photo_url = m.group(1).replace("\\/", "/")
-
-        # ── Verified ──
-        if '"is_verified":true' in html or '"isVerified":true' in html:
-            profile.verified = True
-
-        # ── Friends count ──
-        for p in [r'"friends_count"\s*:\s*(\d+)',
-                  r'"text"\s*:\s*"([\d,]+)\s+friends?"']:
-            m = re.search(p, html, re.IGNORECASE)
+            profile.profile_picture_url = m.group(1).replace('\\/', '/')
+        elif not profile.profile_picture_url:
+            m = re.search(r'property="og:image"\s+content="([^"]+)"', html)
             if m:
-                profile.friends_count = int(m.group(1).replace(",", ""))
-                break
+                profile.profile_picture_url = m.group(1)
 
-        # ── Followers count ──
-        for p in [r'"follower_count"\s*:\s*(\d+)',
-                  r'"text"\s*:\s*"([\d,.KMB]+)\s+follower']:
-            m = re.search(p, html, re.IGNORECASE)
-            if m:
-                profile.followers_count = _parse_count(m.group(1))
-                break
+        # --- Cover photo ---
+        m = re.search(r'"coverPhoto"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"', html)
+        if not m:
+            m = re.search(r'"cover_photo"\s*:\s*\{[^}]*"uri"\s*:\s*"([^"]+)"', html)
+        if m:
+            profile.cover_photo_url = m.group(1).replace('\\/', '/')
 
-        # ── Bio ──
-        for p in [r'"bio_text"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]+)"',
-                  r'"profile_intro_card"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]+)"']:
-            m = re.search(p, html)
-            if m:
-                profile.bio = _unescape(m.group(1))
-                break
-
-        # ── Gender ──
+        # --- Gender ---
         m = re.search(r'"gender"\s*:\s*"(MALE|FEMALE|CUSTOM)"', html, re.IGNORECASE)
         if m:
             profile.gender = m.group(1).capitalize()
 
-    def _extract_name(self, html: str, profile: ProfileData):
-        """Extract real name using title tag and og:title — filters out FB internal module names."""
-        candidates = []
+        # --- Verified ---
+        if '"is_verified":true' in html or '"isVerified":true' in html:
+            profile.verified = True
 
-        # 1. <title> tag — most reliable
-        m = re.search(r'<title[^>]*>([^<]+)</title>', html)
+        # --- Friends count ---
+        m = re.search(r'"friend_count"\s*:\s*(\d+)', html)
         if m:
-            name = m.group(1).strip()
-            for suffix in [" | Facebook", " - Facebook", " — Facebook", " · Facebook"]:
-                name = name.replace(suffix, "")
-            name = name.strip()
-            if name:
-                candidates.append(name)
+            profile.friends_count = int(m.group(1))
 
-        # 2. og:title meta tag
-        m = re.search(r'<meta\s+(?:property|name)="og:title"\s+content="([^"]+)"', html)
-        if not m:
-            m = re.search(r'content="([^"]+)"\s+(?:property|name)="og:title"', html)
+        # --- Followers count ---
+        m = re.search(r'"text"\s*:\s*"([\d,.KMB]+)\s+followers?"', html, re.IGNORECASE)
         if m:
-            name = m.group(1).strip()
-            for suffix in [" | Facebook", " - Facebook"]:
-                name = name.replace(suffix, "")
-            if name:
-                candidates.append(name)
+            profile.followers_count = _parse_count(m.group(1))
 
-        # 3. Structured data name with __typename User context
-        m = re.search(r'"__typename"\s*:\s*"User"[^}]*"name"\s*:\s*"([^"]{2,80})"', html)
+        # --- Following count ---
+        m = re.search(r'"text"\s*:\s*"([\d,.KMB]+)\s+following"', html, re.IGNORECASE)
         if m:
-            candidates.append(m.group(1))
+            profile.following_count = _parse_count(m.group(1))
 
-        # 4. Profile header name pattern
-        m = re.search(r'"profile_header_renderer"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"', html)
-        if m:
-            candidates.append(m.group(1))
-
-        # Pick the first valid candidate
-        for name in candidates:
-            name = _unescape(name)
-            if name and name not in INVALID_NAMES and len(name) < 80 and not name.startswith("WAWeb"):
-                profile.name = name
-                return
-
+    # =========================================================================
+    # Profile classification
+    # =========================================================================
     def _classify_profile(self, html: str, profile: ProfileData):
-        """Classify profile access level."""
         snippet = html[:200000]
+        s_lower = snippet.lower()
 
-        deactivated = ["This content isn't available", "this page isn't available",
-                       "The link you followed may be broken", "this account has been deactivated",
-                       '"is_deactivated":true']
-        for sig in deactivated:
-            if sig.lower() in snippet.lower():
-                profile.profile_type = "Deactivated Profile"
+        deactivated_sigs = ["this content isn't available", "this page isn't available",
+                            "this account has been deactivated", '"is_deactivated":true']
+        for sig in deactivated_sigs:
+            if sig.lower() in s_lower:
+                profile.profile_type = 'Deactivated Profile'
                 return
 
-        if "Sorry, this content isn" in snippet or "content isn\u2019t available" in snippet:
-            profile.profile_type = "Unavailable Profile"
+        locked_sigs = ['"is_profile_locked":true', '"profile_locked":true',
+                       'ProfileLockSection', 'This profile is locked']
+        if any(sig in snippet for sig in locked_sigs):
+            profile.profile_type = 'Locked Profile'
             return
 
-        locked = ['"is_profile_locked":true', '"profile_locked":true', '"is_locked":true',
-                  'ProfileLockSection', 'ProfileLockedContent', 'This profile is locked']
-        if any(sig in snippet for sig in locked):
-            profile.profile_type = "Locked Profile"
+        if '"is_private":true' in snippet:
+            profile.profile_type = 'Private Profile'
             return
 
-        private = ['"is_private":true', '"timeline_visibility":"SELF"']
-        if any(sig in snippet for sig in private):
-            profile.profile_type = "Private Profile"
-            return
+        profile.profile_type = 'Public Profile'
 
-        profile.profile_type = "Public Profile"
-
-    def _reclassify_after_about(self, profile: ProfileData):
-        if profile.profile_type == "Public Profile":
-            data_points = sum([len(profile.work) > 0, len(profile.education) > 0,
-                               bool(profile.current_city), bool(profile.hometown),
-                               len(profile.phone_numbers) > 0 or len(profile.emails) > 0,
-                               bool(profile.relationship_status), bool(profile.bio)])
-            if data_points == 0 and profile.name:
-                profile.profile_type = "Limited Profile"
+    def _reclassify(self, profile: ProfileData):
+        """Downgrade to 'Limited Profile' if almost no data was found."""
+        if profile.profile_type == 'Public Profile':
+            has_data = any([
+                profile.bio, profile.current_city, profile.hometown,
+                len(profile.work) > 0, len(profile.education) > 0,
+                profile.birthday, profile.relationship_status,
+                len(profile.phone_numbers) > 0, len(profile.emails) > 0,
+                len(profile.family_members) > 0, len(profile.websites) > 0,
+            ])
+            if not has_data:
+                profile.profile_type = 'Limited Profile'
 
     # =========================================================================
-    # About Section Scraping — uses directory_* URLs
+    # About section scraping
     # =========================================================================
-    async def _scrape_about_sections(self, profile: ProfileData):
-        """Scrape all about section pages using the directory_* URL pattern."""
-        base_id = profile.user_id or profile.username
-
-        sections = [
-            ("directory_intro", self._parse_intro),
-            ("directory_work", self._parse_work),
-            ("directory_education", self._parse_education),
-            ("directory_contact_info", self._parse_contact),
-            ("directory_basic_info", self._parse_basic_info),
-            ("directory_personal_details", self._parse_personal_details),
-            ("directory_links", self._parse_links),
-            ("about_places", self._parse_places),
-            ("about_family_and_relationships", self._parse_relationships),
-            ("about_details", self._parse_details),
-        ]
-
-        for section_key, parser in sections:
-            # Build URL based on whether we have numeric ID or username
+    async def _scrape_all_about_sections(self, profile: ProfileData):
+        """Navigate to each directory_* URL and extract profile_fields data."""
+        for section_key in ABOUT_SECTIONS:
             if profile.user_id and profile.user_id.isdigit():
-                section_url = f"https://www.facebook.com/profile.php?id={profile.user_id}&sk={section_key}"
+                url = f'https://www.facebook.com/profile.php?id={profile.user_id}&sk={section_key}'
             else:
-                section_url = f"https://www.facebook.com/{profile.username}/{section_key}"
+                url = f'https://www.facebook.com/{profile.username}/{section_key}'
 
             try:
-                html = await self.engine.fetch_page_html(section_url)
+                html = await self.engine.fetch_page_html(url)
                 if html:
-                    parser(html, profile)
+                    self._extract_profile_fields(html, profile, section_key)
                     await self.rate_limiter.on_request_complete()
                 await self.rate_limiter.section_delay()
             except Exception as e:
-                log.warning(f"  ⚠️ Failed {section_key}: {e}")
+                log.warning(f'  \u26a0\ufe0f Failed {section_key}: {e}')
 
-    def _parse_intro(self, html: str, profile: ProfileData):
-        """Parse intro / bio section."""
-        texts = _extract_all_text_values(html)
-        for t in texts:
-            if len(t) > 10 and not _is_boilerplate(t):
-                if not profile.bio:
-                    profile.bio = t
-                elif not profile.intro and t != profile.bio:
-                    profile.intro = t
+    # =========================================================================
+    # Core JSON extraction: profile_fields
+    # =========================================================================
+    def _extract_profile_fields(self, html: str, profile: ProfileData, section_key: str):
+        """Parse all profile_fields nodes from embedded <script> JSON."""
+        all_fields = self._parse_profile_fields_json(html)
 
-    def _parse_work(self, html: str, profile: ProfileData):
-        """Parse work/employment section."""
-        # Structured employer+position
-        for m in re.finditer(r'"employer"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"', html):
-            company = _unescape(m.group(1))
-            pos_m = re.search(r'"position"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"', html[m.end():m.end()+500])
-            position = _unescape(pos_m.group(1)) if pos_m else ""
-            if company not in INVALID_NAMES:
-                profile.work.append(WorkExperience(company=company, position=position))
+        for field in all_fields:
+            if not isinstance(field, dict):
+                continue
 
-        # "Works at X" / "Worked at X" patterns
-        for m in re.finditer(r'"text"\s*:\s*"((?:Works?|Worked)\s+at\s+[^"]+)"', html):
-            text = _unescape(m.group(1))
-            company = re.sub(r'^(?:Works?|Worked)\s+at\s+', '', text).strip()
-            if company and not any(w.company == company for w in profile.work):
-                profile.work.append(WorkExperience(company=company))
+            ft = field.get('field_type', '')
+            title_text, content_text = _get_field_texts(field)
+            value = _unescape(title_text or content_text)
+            if not value:
+                continue
 
-        # Self-employed / freelancer patterns
-        for m in re.finditer(r'"text"\s*:\s*"(Self-[Ee]mployed|Freelanc(?:e|er|ing)[^"]*)"', html):
-            text = _unescape(m.group(1))
-            if not any(w.company == text for w in profile.work):
-                profile.work.append(WorkExperience(company=text))
-
-    def _parse_education(self, html: str, profile: ProfileData):
-        """Parse education section."""
-        # Structured school
-        for m in re.finditer(r'"school"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"', html):
-            school = _unescape(m.group(1))
-            if school not in INVALID_NAMES:
-                conc_m = re.search(r'"concentration"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"', html[m.end():m.end()+500])
-                profile.education.append(Education(
-                    school=school,
-                    concentration=_unescape(conc_m.group(1)) if conc_m else "",
-                ))
-
-        # "Studied at X" / "Went to X" / "Goes to X"
-        for m in re.finditer(r'"text"\s*:\s*"((?:Studied|Studies|Went to|Goes to)\s+(?:at\s+)?[^"]+)"', html):
-            text = _unescape(m.group(1))
-            school = re.sub(r'^(?:Studied|Studies|Went to|Goes to)\s+(?:at\s+)?', '', text).strip()
-            if school and not any(e.school == school for e in profile.education):
-                profile.education.append(Education(school=school))
-
-    def _parse_contact(self, html: str, profile: ProfileData):
-        """Parse contact info section."""
-        # Phone numbers
-        phones = re.findall(r'"text"\s*:\s*"(\+?[\d\s\-\(\)]{7,20})"', html)
-        for p in phones:
-            p = p.strip()
-            if p and p not in profile.phone_numbers and len(p) >= 7:
-                profile.phone_numbers.append(p)
-
-        # Emails
-        emails = re.findall(r'"text"\s*:\s*"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})"', html)
-        for e in emails:
-            if e not in profile.emails:
-                profile.emails.append(e)
-
-        # Birthday
-        for p in [r'"text"\s*:\s*"((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:,\s*\d{4})?)"',
-                  r'"birthday"\s*:\s*"([^"]+)"']:
-            m = re.search(p, html)
-            if m and not profile.birthday:
-                profile.birthday = m.group(1).strip()
-
-    def _parse_basic_info(self, html: str, profile: ProfileData):
-        """Parse basic info section (gender, languages, etc)."""
-        # Gender
-        if not profile.gender:
-            m = re.search(r'"gender"\s*:\s*"(MALE|FEMALE|CUSTOM)"', html, re.IGNORECASE)
-            if m:
-                profile.gender = m.group(1).capitalize()
-            else:
-                for g in ["Male", "Female"]:
-                    if f'"text":"{g}"' in html:
-                        profile.gender = g
-                        break
-
-        # Languages
-        langs = re.findall(r'"text"\s*:\s*"((?:Speaks|Knows)\s+[^"]+)"', html)
-        for l in langs:
-            lang_text = re.sub(r'^(?:Speaks|Knows)\s+', '', l)
-            for lang in re.split(r'\s*(?:,|and)\s*', lang_text):
-                lang = lang.strip()
-                if lang and lang not in profile.languages:
-                    profile.languages.append(lang)
-
-    def _parse_personal_details(self, html: str, profile: ProfileData):
-        """Parse personal details (interested in, religion, politics)."""
-        texts = _extract_all_text_values(html)
-        for t in texts:
-            t_lower = t.lower()
-            if "interested in" in t_lower and not profile.interested_in:
-                profile.interested_in = re.sub(r'^interested in\s*', '', t, flags=re.IGNORECASE).strip()
-            elif any(r in t_lower for r in ["religious", "religion", "christian", "muslim", "catholic", "buddhist", "hindu", "jewish"]):
-                if not profile.religious_views:
-                    profile.religious_views = t
-            elif any(p in t_lower for p in ["political", "liberal", "conservative", "moderate"]):
-                if not profile.political_views:
-                    profile.political_views = t
-
-    def _parse_links(self, html: str, profile: ProfileData):
-        """Parse links / websites / social links section."""
-        # Websites
-        urls = re.findall(r'"url"\s*:\s*"(https?://[^"]+)"', html)
-        for u in urls:
-            u = u.replace("\\/", "/")
-            if "facebook.com" not in u and "fbcdn" not in u and u not in profile.websites:
-                if any(s in u.lower() for s in ["instagram", "twitter", "tiktok", "youtube", "linkedin"]):
-                    if u not in profile.social_links:
-                        profile.social_links.append(u)
+            # ── Map field_type to ProfileData attributes ──
+            if ft == 'bio' and not profile.bio:
+                profile.bio = value
+            elif ft == 'intro' and not profile.intro:
+                profile.intro = value
+            elif ft == 'current_city' and not profile.current_city:
+                profile.current_city = value
+            elif ft == 'hometown' and not profile.hometown:
+                profile.hometown = value
+            elif ft == 'birthday' and not profile.birthday:
+                profile.birthday = value
+            elif ft == 'relationship_status':
+                if not profile.relationship_status:
+                    profile.relationship_status = value
+                    if content_text and content_text != value:
+                        profile.relationship_status += f' \u2014 {_unescape(content_text)}'
+            elif ft == 'significant_other' and not profile.significant_other:
+                profile.significant_other = value
+            elif ft == 'family_member':
+                relationship = _extract_relationship(field, content_text, value)
+                if value and not any(f.name == value for f in profile.family_members):
+                    profile.family_members.append(FamilyMember(name=value, relationship=relationship))
+            elif ft == 'gender' and not profile.gender:
+                profile.gender = value
+            elif ft == 'languages':
+                if not profile.languages:
+                    for lang in re.split(r',\s*|\s+and\s+', value):
+                        lang = lang.strip()
+                        if lang and lang not in profile.languages:
+                            profile.languages.append(lang)
+            elif ft == 'favorite_quotes' and not profile.favorite_quotes:
+                profile.favorite_quotes = value
+            elif ft == 'interested_in' and not profile.interested_in:
+                profile.interested_in = value
+            elif ft == 'political_views' and not profile.political_views:
+                profile.political_views = value
+            elif ft == 'religious_views' and not profile.religious_views:
+                profile.religious_views = value
+            elif ft == 'work':
+                company = value
+                position = _unescape(content_text) if content_text and content_text != company else ''
+                if company and not any(w.company == company for w in profile.work):
+                    profile.work.append(WorkExperience(company=company, position=position))
+            elif ft == 'education':
+                school = value
+                concentration = _unescape(content_text) if content_text and content_text != school else ''
+                if school and not any(e.school == school for e in profile.education):
+                    profile.education.append(Education(school=school, concentration=concentration))
+            elif ft == 'website':
+                if value not in profile.websites:
+                    profile.websites.append(value)
+            elif ft == 'screenname':
+                if value not in profile.social_links and 'facebook.com' not in value:
+                    profile.social_links.append(value)
+            elif ft == 'phone':
+                if value not in profile.phone_numbers:
+                    profile.phone_numbers.append(value)
+            elif ft in ('email_address', 'email'):
+                if value not in profile.emails and '@' in value:
+                    profile.emails.append(value)
+            elif ft == 'name_pronunciation':
+                extra = f'Pronunciation: {value}'
+                profile.intro = f'{profile.intro}\n{extra}' if profile.intro else extra
+            elif ft == 'other_names':
+                extra = f'Other name: {value}'
+                if not profile.intro:
+                    profile.intro = extra
+                elif 'Other name' not in profile.intro:
+                    profile.intro += f'\n{extra}'
                 else:
-                    profile.websites.append(u)
+                    profile.intro += f', {value}'
+            elif ft == 'category':
+                if not profile.bio:
+                    profile.bio = value
+            elif ft == 'impressum':
+                extra = f'Impressum: {value}'
+                profile.intro = f'{profile.intro}\n{extra}' if profile.intro else extra
+            elif ft in ('travel', 'places_lived'):
+                if value not in profile.places_lived:
+                    profile.places_lived.append(value)
+            elif ft == 'directory_item':
+                if value not in profile.life_events:
+                    profile.life_events.append(value)
 
-        # Text-based links
-        links = re.findall(r'"text"\s*:\s*"((?:https?://|www\.)[^"]+)"', html)
-        for link in links:
-            if link not in profile.websites and "facebook.com" not in link:
-                profile.websites.append(link)
+    # =========================================================================
+    # JSON array parser
+    # =========================================================================
+    def _parse_profile_fields_json(self, html: str) -> list[dict]:
+        """Find and parse all profile_fields.nodes arrays from the page HTML."""
+        all_fields = []
 
-    def _parse_places(self, html: str, profile: ProfileData):
-        """Parse places lived section."""
-        m = re.search(r'"text"\s*:\s*"(?:Lives in|Current [Cc]ity)\s+([^"]+)"', html)
-        if m and not profile.current_city:
-            profile.current_city = _unescape(m.group(1))
-        m = re.search(r'"text"\s*:\s*"(?:From|Hometown)\s+([^"]+)"', html)
-        if m and not profile.hometown:
-            profile.hometown = _unescape(m.group(1))
-        for m in re.finditer(r'"text"\s*:\s*"(?:Moved to|Lived in)\s+([^"]+)"', html):
-            place = _unescape(m.group(1))
-            if place not in profile.places_lived:
-                profile.places_lived.append(place)
+        # Strategy 1: Structured JSON extraction via brace-counting
+        for m in re.finditer(r'"profile_fields"\s*:\s*\{\s*"nodes"\s*:\s*\[', html):
+            start = m.end() - 1  # position of '['
+            depth = 0
+            i = start
+            limit = min(len(html), start + 80000)
+            while i < limit:
+                if html[i] == '[':
+                    depth += 1
+                elif html[i] == ']':
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            nodes = json.loads(html[start:i + 1])
+                            all_fields.extend(nodes)
+                        except json.JSONDecodeError:
+                            pass
+                        break
+                i += 1
 
-    def _parse_relationships(self, html: str, profile: ProfileData):
-        """Parse relationships and family section."""
-        statuses = ["Single", "In a relationship", "Engaged", "Married", "In a civil union",
-                    "In a domestic partnership", "In an open relationship", "It's complicated",
-                    "Separated", "Divorced", "Widowed"]
-        for s in statuses:
-            if f'"{s}"' in html or f">{s}<" in html:
-                profile.relationship_status = s
-                break
+        # Strategy 2: Regex fallback for field_type + title pairs
+        if not all_fields:
+            for m in re.finditer(r'"field_type"\s*:\s*"([^"]+)"', html):
+                field_type = m.group(1)
+                ctx_start = max(0, m.start() - 500)
+                ctx_end = min(len(html), m.end() + 2000)
+                context = html[ctx_start:ctx_end]
 
-        # Family members
-        for m in re.finditer(r'"text"\s*:\s*"([^"]+)"[^}]*"(?:subtitle|secondary)"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]+)"', html):
-            name, rel = _unescape(m.group(1)), _unescape(m.group(2))
-            family_words = ["sister", "brother", "mother", "father", "son", "daughter", "wife", "husband",
-                           "aunt", "uncle", "cousin", "grandmother", "grandfather", "niece", "nephew"]
-            if any(w in rel.lower() for w in family_words):
-                if not any(f.name == name for f in profile.family_members):
-                    profile.family_members.append(FamilyMember(name=name, relationship=rel))
+                title_m = re.search(r'"title"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]+)"', context)
+                text_m = re.search(r'"text_content"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]+)"', context)
 
-    def _parse_details(self, html: str, profile: ProfileData):
-        """Parse extra details section."""
-        # Favorite quotes
-        m = re.search(r'"favorite_quotes"\s*:\s*"([^"]+)"', html)
-        if m:
-            profile.favorite_quotes = _unescape(m.group(1))
+                title_text = title_m.group(1) if title_m else ''
+                content_text = text_m.group(1) if text_m else ''
 
-        # Name pronunciation, nicknames, etc — capture any remaining text
-        texts = _extract_all_text_values(html)
-        for t in texts:
-            if "quote" in t.lower() and not profile.favorite_quotes:
-                profile.favorite_quotes = t
+                if title_text or content_text:
+                    all_fields.append({
+                        'field_type': field_type,
+                        'title': {'text': title_text},
+                        'text_content': {'text': content_text} if content_text else None,
+                    })
+
+        return all_fields
 
 
 # =============================================================================
-# Utility functions
+# Helper functions
 # =============================================================================
 
-def _extract_all_text_values(html: str) -> list[str]:
-    """Extract all 'text' field values from Facebook HTML JSON."""
-    results = []
-    for m in re.finditer(r'"text"\s*:\s*"([^"]{3,500})"', html):
-        text = _unescape(m.group(1))
-        if text and not _is_boilerplate(text):
-            results.append(text)
-    return results
+def _get_field_texts(field: dict) -> tuple[str, str]:
+    """Extract title text and content text from a profile_fields node."""
+    title_text = ''
+    content_text = ''
+
+    title = field.get('title')
+    if isinstance(title, dict):
+        title_text = title.get('text', '')
+    elif isinstance(title, str):
+        title_text = title
+
+    tc = field.get('text_content')
+    if isinstance(tc, dict) and tc:
+        content_text = tc.get('text', '')
+
+    return title_text, content_text
 
 
-def _is_boilerplate(text: str) -> bool:
-    """Filter out Facebook UI boilerplate text."""
-    boilerplate = [
-        "See more", "See less", "Like", "Comment", "Share", "Send",
-        "Write a comment", "Log in", "Sign up", "Create new account",
-        "Forgot password", "Privacy Policy", "Terms of Service",
-        "Cookie Policy", "Accessibility", "Report", "Block",
-        "Anyone can see", "Only members", "Visible", "Public",
-        "WAWeb", "RelayModern", "CometFeed", "undefined",
-    ]
-    return any(bp.lower() == text.lower() or text.startswith(bp) for bp in boilerplate)
+def _extract_relationship(field: dict, content_text: str, name: str) -> str:
+    """Extract relationship type from family_member field."""
+    relationship = ''
+
+    # Check list_item_groups first
+    if isinstance(field.get('list_item_groups'), list):
+        for group in field['list_item_groups']:
+            if isinstance(group, dict):
+                for item in group.get('list_items', []):
+                    if isinstance(item, dict):
+                        tc = item.get('text_content')
+                        if isinstance(tc, dict):
+                            relationship = tc.get('text', '')
+
+    # Fallback: text_content different from name
+    if not relationship and content_text and content_text != name:
+        relationship = content_text
+
+    return relationship
 
 
 def _unescape(text: str) -> str:
-    """Decode unicode escapes in Facebook JSON strings."""
+    """Decode unicode escape sequences in text from Facebook JSON."""
+    if not text:
+        return ''
     try:
         return text.encode().decode('unicode_escape', errors='ignore')
     except Exception:
@@ -437,10 +409,16 @@ def _unescape(text: str) -> str:
 
 
 def _parse_count(text: str) -> int:
-    text = text.replace(",", "").strip()
+    """Parse human-readable counts like '1.5K', '2M', etc."""
+    text = text.replace(',', '').strip()
     mult = 1
-    if text.upper().endswith("K"): mult, text = 1000, text[:-1]
-    elif text.upper().endswith("M"): mult, text = 1000000, text[:-1]
-    elif text.upper().endswith("B"): mult, text = 1000000000, text[:-1]
-    try: return int(float(text) * mult)
-    except ValueError: return 0
+    if text.upper().endswith('K'):
+        mult, text = 1000, text[:-1]
+    elif text.upper().endswith('M'):
+        mult, text = 1_000_000, text[:-1]
+    elif text.upper().endswith('B'):
+        mult, text = 1_000_000_000, text[:-1]
+    try:
+        return int(float(text) * mult)
+    except ValueError:
+        return 0

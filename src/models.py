@@ -179,7 +179,6 @@ class GroupData:
     created_at: str = ""
     admins: list[GroupMember] = field(default_factory=list)
     moderators: list[GroupMember] = field(default_factory=list)
-    members: list[GroupMember] = field(default_factory=list)
     rules: list[str] = field(default_factory=list)
     topics: list[str] = field(default_factory=list)
     location: str = ""
