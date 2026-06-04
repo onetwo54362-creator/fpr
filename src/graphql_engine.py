@@ -247,6 +247,60 @@ _INVALID_NAMES = {
     'About', 'Intro', 'Mentions',
 }
 
+def _extract_profile_fields_from_dom(html: str) -> list[dict]:
+    """Fallback: extract text directly from SSR HTML sections if JSON is missing.
+    The new Facebook 'directory' layout Server-Side Renders the fields into HTML
+    but omits the 'profile_fields' JSON payload.
+    """
+    fields = []
+    sections = re.findall(r'<section\b[^>]*>(.*?)</section>', html, re.DOTALL | re.IGNORECASE)
+    
+    ft_map = {
+        'bio': 'bio',
+        'intro': 'intro',
+        'category': 'category',
+        'location': 'current_city',
+        'places lived': 'current_city',
+        'hometown': 'hometown',
+        'birthday': 'birthday',
+        'status': 'relationship_status',
+        'family members': 'family_members',
+        'gender': 'gender',
+        'languages': 'languages',
+        'contact info': 'contact_info',
+        'basic info': 'basic_info',
+        'work': 'work',
+        'education': 'education'
+    }
+
+    for sec in sections:
+        m_h2 = re.search(r'<h2\b[^>]*>(.*?)</h2>', sec, re.IGNORECASE | re.DOTALL)
+        if not m_h2:
+            continue
+            
+        header = re.sub(r'<[^>]+>', '', m_h2.group(1)).strip().lower()
+        content_html = sec[m_h2.end():]
+        text_parts = [t.strip() for t in re.sub(r'<[^>]+>', '\n', content_html).split('\n') if t.strip()]
+        
+        if not text_parts:
+            continue
+            
+        ft = ft_map.get(header, header.replace(' ', '_'))
+        
+        # Family members usually alternate Name, Relationship
+        if ft == 'family_members':
+            for i in range(0, len(text_parts), 2):
+                if i < len(text_parts):
+                    title = text_parts[i]
+                    sub = text_parts[i+1] if i+1 < len(text_parts) else ''
+                    fields.append({'field_type': ft, 'title': {'text': title}, 'subtitle': {'text': sub}})
+        else:
+            title = text_parts[0]
+            sub = text_parts[1] if len(text_parts) > 1 else ''
+            fields.append({'field_type': ft, 'title': {'text': title}, 'subtitle': {'text': sub}})
+            
+    return fields
+
 
 def _extract_profile_fields_from_html(html: str) -> list[dict]:
     """Extract all profile_fields nodes from embedded <script> JSON.
@@ -321,6 +375,15 @@ def _extract_profile_fields_from_html(html: str) -> list[dict]:
                 if sub_text:
                     f['subtitle'] = {'text': sub_text}
                 all_fields.append(f)
+
+    # Strategy 3: Server-Side Rendered DOM Text extraction (for new directory layouts)
+    dom_fields = _extract_profile_fields_from_dom(html)
+    if dom_fields:
+        # Avoid duplicates: only add dom_fields if their field_type isn't already extracted
+        existing_types = {f.get('field_type') for f in all_fields if f.get('field_type')}
+        for df in dom_fields:
+            if df.get('field_type') not in existing_types:
+                all_fields.append(df)
 
     return all_fields
 
