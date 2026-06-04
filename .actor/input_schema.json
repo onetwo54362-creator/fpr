@@ -49,24 +49,28 @@
         "minBatchSize": {
             "title": "Min Batch Size",
             "type": "integer",
+            "description": "Minimum number of requests before a random cooldown pause.",
             "default": 2,
             "minimum": 1
         },
         "maxBatchSize": {
             "title": "Max Batch Size",
             "type": "integer",
+            "description": "Maximum number of requests before a random cooldown pause.",
             "default": 5,
             "minimum": 1
         },
         "minCooldownSeconds": {
             "title": "Min Cooldown (s)",
             "type": "number",
+            "description": "Minimum cooldown duration in seconds between request batches.",
             "default": 3,
             "minimum": 0.5
         },
         "maxCooldownSeconds": {
             "title": "Max Cooldown (s)",
             "type": "number",
+            "description": "Maximum cooldown duration in seconds between request batches.",
             "default": 10,
             "minimum": 1
         },
