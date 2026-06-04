@@ -16,7 +16,7 @@ from .page_scraper import PageScraper
 from .profile_scraper import ProfileScraper
 from .proxy_manager import ProxyManager
 from .rate_limiter import RateLimiter
-from .url_parser import parse_target_url
+from .response_parser import parse_target_url
 
 try:
     from .excel_exporter import create_excel
@@ -41,17 +41,39 @@ async def main():
         else:
             cookies = raw_cookies
 
-        urls = actor_input.get('urls', [])
-        if isinstance(urls, str):
-            urls = [u.strip() for u in urls.split(',') if u.strip()]
-        elif isinstance(urls, list):
-            flat = []
-            for u in urls:
-                if isinstance(u, dict):
-                    flat.append(u.get('url', ''))
-                else:
-                    flat.append(str(u))
-            urls = [u.strip() for u in flat if u.strip()]
+        # Parse URLs — support both field names and formats
+        urls = []
+        # Primary: bulk textarea (targetUrls) — one URL per line
+        bulk_text = actor_input.get('targetUrls', '').strip() if isinstance(actor_input.get('targetUrls', ''), str) else ''
+        if bulk_text:
+            for line in bulk_text.splitlines():
+                line = line.strip()
+                if line and line.startswith('http'):
+                    urls.append(line)
+        # Fallback: single URL field
+        single_url = actor_input.get('targetUrl', '').strip() if isinstance(actor_input.get('targetUrl', ''), str) else ''
+        if single_url and single_url not in urls and single_url != 'https://www.facebook.com/':
+            urls.append(single_url)
+        # Fallback: 'urls' field (list or comma-separated string)
+        if not urls:
+            raw_urls = actor_input.get('urls', [])
+            if isinstance(raw_urls, str):
+                urls = [u.strip() for u in raw_urls.split(',') if u.strip()]
+            elif isinstance(raw_urls, list):
+                for u in raw_urls:
+                    if isinstance(u, dict):
+                        urls.append(u.get('url', ''))
+                    else:
+                        urls.append(str(u))
+                urls = [u.strip() for u in urls if u.strip()]
+        # Deduplicate
+        seen = set()
+        unique = []
+        for u in urls:
+            if u not in seen:
+                seen.add(u)
+                unique.append(u)
+        urls = unique
 
         if not urls:
             log.error('No URLs provided')
@@ -71,8 +93,8 @@ async def main():
 
         proxy_manager = ProxyManager(proxy_url=proxy_url)
         rate_limiter = RateLimiter(
-            min_delay=actor_input.get('minDelay', 2.0),
-            max_delay=actor_input.get('maxDelay', 5.0),
+            min_delay=actor_input.get('minCooldownSeconds', actor_input.get('minDelay', 2.0)),
+            max_delay=actor_input.get('maxCooldownSeconds', actor_input.get('maxDelay', 5.0)),
         )
 
         engine = GraphQLEngine(cookies, fb_dtsg, proxy_manager)
