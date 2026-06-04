@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import gc
 import logging
 
 from apify import Actor
@@ -114,15 +113,17 @@ async def main():
                 target_type, entity_id, clean_url = parse_target_url(url)
                 log.info(f"  Type: {target_type}, ID/Username: {entity_id}")
 
-                # If type is unknown, resolve it by fetching the page
-                html_content = None
+                # If type is unknown, resolve by fetching (returns compact data, NOT full HTML)
+                initial_data = None
                 if target_type == TargetType.UNKNOWN:
                     log.info(f"  🔍 Resolving entity type for: {clean_url}")
-                    resolved_type, resolved_id, html_content = await engine.resolve_entity_type_and_id(clean_url)
-                    if resolved_type != TargetType.UNKNOWN:
-                        target_type = resolved_type
-                    if resolved_id:
-                        entity_id = resolved_id
+                    resolved = await engine.resolve_entity(clean_url)
+                    if resolved["type"] != TargetType.UNKNOWN:
+                        target_type = resolved["type"]
+                    if resolved.get("id"):
+                        entity_id = resolved["id"]
+                    # Pass the compact data dict (~5KB) to scraper so it doesn't re-fetch
+                    initial_data = resolved
                     await rate_limiter.on_request_complete()
                     log.info(f"  → Resolved: type={target_type}, id={entity_id}")
 
@@ -130,52 +131,40 @@ async def main():
                 if target_type == TargetType.PROFILE:
                     profile = await profile_scraper.scrape(
                         url=clean_url, username=entity_id, user_id=entity_id if entity_id.isdigit() else "",
-                        initial_html=html_content or "",
+                        initial_data=initial_data,
                     )
-                    html_content = None  # Free memory
                     await dataset.push_data(profile.to_dataset_dict())
                     all_profiles.append(profile)
                     log.info(f"  ✅ Profile: {profile.name}")
-                    del profile
-                    gc.collect()
 
                 elif target_type == TargetType.GROUP:
                     group = await group_scraper.scrape(
                         url=clean_url, group_id=entity_id,
-                        initial_html=html_content or "",
+                        initial_data=initial_data,
                     )
-                    html_content = None
                     await dataset.push_data(group.to_dataset_dict())
                     all_groups.append(group)
                     log.info(f"  ✅ Group: {group.name}")
-                    del group
-                    gc.collect()
 
                 elif target_type == TargetType.PAGE:
                     page = await page_scraper.scrape(
                         url=clean_url, page_id=entity_id if entity_id.isdigit() else "",
                         username=entity_id if not entity_id.isdigit() else "",
-                        initial_html=html_content or "",
+                        initial_data=initial_data,
                     )
-                    html_content = None
                     await dataset.push_data(page.to_dataset_dict())
                     all_pages.append(page)
                     log.info(f"  ✅ Page: {page.name}")
-                    del page
-                    gc.collect()
 
                 else:
                     # Last resort: treat as profile
                     log.warning(f"  ⚠️ Could not determine type — treating as profile")
                     profile = await profile_scraper.scrape(
                         url=clean_url, username=entity_id,
-                        initial_html=html_content or "",
+                        initial_data=initial_data,
                     )
-                    html_content = None
                     await dataset.push_data(profile.to_dataset_dict())
                     all_profiles.append(profile)
-                    del profile
-                    gc.collect()
 
             except Exception as e:
                 log.error(f"  ❌ Error processing {url}: {e}", exc_info=True)
