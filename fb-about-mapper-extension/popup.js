@@ -245,6 +245,8 @@
 
     // Merge all results
     for (const [section, data] of Object.entries(allResults)) {
+      if (section === '_summary') continue;
+      
       summary.sections[section] = {
         url: data.url,
         headers: data.domData.headers.map(h => h.text),
@@ -273,6 +275,8 @@
 
     // Build the data map: label -> where it was found + how to extract it
     for (const [section, data] of Object.entries(allResults)) {
+      if (section === '_summary') continue;
+      
       for (const pair of data.domData.labelValuePairs) {
         const key = pair.label.toLowerCase().replace(/\s+/g, '_');
         summary.dataMap[key] = {
@@ -339,19 +343,32 @@
   }
 
   async function copyToClipboard() {
-    generateSummary();
-    const json = JSON.stringify(allResults, null, 2);
-    await navigator.clipboard.writeText(json);
-    addLog(`📋 Copied ${(json.length / 1024).toFixed(1)} KB to clipboard`, 'success');
-    btnExport.innerHTML = '<span>✅</span> Copied!';
-    setTimeout(() => btnExport.innerHTML = '<span>📋</span> Copy JSON Map to Clipboard', 2000);
+    try {
+      if (!allResults._summary) generateSummary();
+      const json = JSON.stringify(allResults, null, 2);
+      
+      // Creating a textarea is a more robust fallback for copying in extensions
+      const el = document.createElement('textarea');
+      el.value = json;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+
+      addLog(`📋 Copied ${(json.length / 1024).toFixed(1)} KB to clipboard`, 'success');
+      btnExport.innerHTML = '<span>✅</span> Copied!';
+      setTimeout(() => btnExport.innerHTML = '<span>📋</span> Copy JSON Map to Clipboard', 2000);
+    } catch (err) {
+      addLog(`❌ Copy failed: ${err.message}`, 'error');
+    }
   }
 
   function downloadJson() {
-    generateSummary();
-    const json = JSON.stringify(allResults, null, 2);
-    const entityName = Object.values(allResults)[0]?.entityName?.replace(/[^a-zA-Z0-9]/g, '_') || 'fb';
-    const filename = `fb-about-map_${entityName}_${Date.now()}.json`;
+    try {
+      if (!allResults._summary) generateSummary();
+      const json = JSON.stringify(allResults, null, 2);
+      const entityName = Object.values(allResults)[0]?.entityName?.replace(/[^a-zA-Z0-9]/g, '_') || 'fb';
+      const filename = `fb-about-map_${entityName}_${Date.now()}.json`;
     
     // Create base64 data URI to avoid popup object URL lifecycle issues
     const dataUrl = 'data:application/json;base64,' + btoa(unescape(encodeURIComponent(json)));
@@ -367,6 +384,9 @@
         addLog(`💾 Downloaded JSON map`, 'success');
       }
     });
+    } catch (err) {
+      addLog(`❌ Download failed: ${err.message}`, 'error');
+    }
   }
 
   async function toggleHighlight() {
