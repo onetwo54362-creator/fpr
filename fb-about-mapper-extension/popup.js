@@ -350,15 +350,23 @@
   function downloadJson() {
     generateSummary();
     const json = JSON.stringify(allResults, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
     const entityName = Object.values(allResults)[0]?.entityName?.replace(/[^a-zA-Z0-9]/g, '_') || 'fb';
-    a.download = `fb-about-map_${entityName}_${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    addLog(`💾 Downloaded JSON map`, 'success');
+    const filename = `fb-about-map_${entityName}_${Date.now()}.json`;
+    
+    // Create base64 data URI to avoid popup object URL lifecycle issues
+    const dataUrl = 'data:application/json;base64,' + btoa(unescape(encodeURIComponent(json)));
+    
+    chrome.downloads.download({
+      url: dataUrl,
+      filename: filename,
+      saveAs: true
+    }, (downloadId) => {
+      if (chrome.runtime.lastError) {
+        addLog(`❌ Download error: ${chrome.runtime.lastError.message}`, 'error');
+      } else {
+        addLog(`💾 Downloaded JSON map`, 'success');
+      }
+    });
   }
 
   async function toggleHighlight() {

@@ -3,7 +3,7 @@
   "name": "FB About Page Data Mapper",
   "version": "1.0.0",
   "description": "Scans Facebook About pages and maps where each data field lives in the DOM. Exports structured JSON for scraper development.",
-  "permissions": ["activeTab", "scripting", "storage"],
+  "permissions": ["activeTab", "scripting", "storage", "downloads"],
   "host_permissions": ["https://www.facebook.com/*", "https://m.facebook.com/*"],
   "action": {
     "default_popup": "popup.html",
