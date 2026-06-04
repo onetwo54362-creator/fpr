@@ -1,8 +1,9 @@
-"""Page scraper — memory-efficient, no full HTML in memory."""
+"""Page scraper — memory-efficient, handles infinite URLs at 128MB RAM."""
 
 from __future__ import annotations
 
 import logging
+import re
 
 from .graphql_engine import GraphQLEngine
 from .models import BusinessHours, PageData
@@ -86,13 +87,11 @@ class PageScraper:
         if status == 'unpublished':
             page.page_type = 'Unpublished Page'
             return
-        is_verified = page.verified
-        is_business = meta.get('category', '') != ''
-        if is_verified and is_business:
+        if page.verified and page.category:
             page.page_type = 'Verified Business Page'
-        elif is_verified:
+        elif page.verified:
             page.page_type = 'Verified Page'
-        elif is_business:
+        elif page.category:
             page.page_type = 'Business Page'
         else:
             page.page_type = 'Public Page'
@@ -108,12 +107,14 @@ class PageScraper:
             try:
                 result = await self.engine.fetch_and_extract(url)
                 fields = result.get('profile_fields', [])
+                meta = result.get('meta', {})
                 if fields:
                     self._apply_fields(fields, page)
+                self._apply_meta(meta, page)
                 await self.rate_limiter.on_request_complete()
                 await self.rate_limiter.section_delay()
             except Exception as e:
-                log.warning(f'  ⚠️ Failed {section_key}: {e}')
+                log.warning(f'  \u26a0\ufe0f Failed {section_key}: {e}')
 
     def _apply_fields(self, fields: list, page: PageData):
         for field in fields:
@@ -125,7 +126,7 @@ class PageScraper:
             if not value:
                 continue
 
-            if ft == 'bio' and not page.short_description:
+            if ft in ('bio', 'about') and not page.short_description:
                 page.short_description = value
             elif ft == 'description' and not page.description:
                 page.description = value
@@ -140,14 +141,15 @@ class PageScraper:
                     page.website = value
                 elif value not in page.additional_websites and value != page.website:
                     page.additional_websites.append(value)
-            elif ft == 'phone' and not page.phone:
+            elif ft in ('phone', 'phone_number') and not page.phone:
                 page.phone = value
-            elif ft in ('email_address', 'email') and not page.email:
+            elif ft in ('email_address', 'email', 'contact_email') and not page.email:
                 if '@' in value:
                     page.email = value
-            elif ft == 'screenname':
+            elif ft in ('screenname', 'social_link'):
                 val_lower = value.lower()
-                if 'instagram' in val_lower or 'instagram' in content_text.lower():
+                ct_lower = content_text.lower() if content_text else ''
+                if 'instagram' in val_lower or 'instagram' in ct_lower:
                     if not page.instagram_url:
                         page.instagram_url = value
                 elif 'twitter' in val_lower or 'x.com' in val_lower:
@@ -158,11 +160,11 @@ class PageScraper:
                         page.whatsapp_number = value
             elif ft == 'impressum' and not page.impressum:
                 page.impressum = value
-            elif ft == 'founded' and not page.founded:
+            elif ft in ('founded', 'date') and not page.founded:
                 page.founded = value
             elif ft == 'mission' and not page.mission:
                 page.mission = value
-            elif ft == 'company_overview' and not page.company_overview:
+            elif ft in ('company_overview', 'about') and not page.company_overview:
                 page.company_overview = value
             elif ft == 'products' and not page.products:
                 page.products = value
@@ -185,6 +187,10 @@ def _get_field_texts(field: dict) -> tuple[str, str]:
     tc = field.get('text_content')
     if isinstance(tc, dict) and tc:
         content_text = tc.get('text', '')
+    if not content_text:
+        sub = field.get('subtitle')
+        if isinstance(sub, dict):
+            content_text = sub.get('text', '')
     return title_text, content_text
 
 

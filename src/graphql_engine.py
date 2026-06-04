@@ -120,74 +120,75 @@ class GraphQLEngine:
             log.error(f"Error fetching {url}: {e}")
             return None
 
-    async def fetch_and_extract(self, url: str) -> dict:
-        """Fetch a page, extract only profile_fields + basic metadata, discard HTML.
+    async def _stream_text(self, url: str) -> Optional[str]:
+        """Fetch URL with streaming — avoids httpx caching both bytes AND text.
 
-        Returns a compact dict (~1-10KB) instead of full HTML (2-5MB).
-        Keys: profile_fields (list), meta (dict with name, user_id, gender, etc.)
+        Normal httpx: resp.text caches ~3MB bytes + ~3MB str = 6MB per request.
+        Streaming: only our text variable = ~3MB. 50% memory savings.
         """
         try:
             headers = get_document_headers(user_agent=self._user_agent)
             self._total_requests += 1
-            resp = await self._client.get(url, headers=headers)
-            if resp.status_code != 200:
-                return {"profile_fields": [], "meta": {}}
+            async with self._client.stream('GET', url, headers=headers) as resp:
+                if resp.status_code != 200:
+                    return None
+                # Read chunks — httpx won't cache .text/.content internally
+                parts = []
+                async for chunk in resp.aiter_text(chunk_size=65536):
+                    parts.append(chunk)
+                text = ''.join(parts)
+                del parts
             self.proxy_manager.on_success()
-            text = resp.text
-            # Extract profile_fields nodes — the actual data we need
-            fields = _extract_profile_fields_from_html(text)
-            # Extract basic metadata with lightweight regex
-            meta = _extract_meta_from_html(text, self.cookies.get("c_user", ""))
-            # HTML goes out of scope here — freed immediately
-            del text
-            return {"profile_fields": fields, "meta": meta}
+            return text
         except Exception as e:
             self._failed_requests += 1
-            log.error(f"Error in fetch_and_extract {url}: {e}")
-            return {"profile_fields": [], "meta": {}}
+            log.error(f"Error streaming {url}: {e}")
+            return None
+
+    async def fetch_and_extract(self, url: str) -> dict:
+        """Fetch a page via streaming, extract profile_fields + metadata, discard HTML.
+
+        Returns ~1-10KB compact dict. Peak memory: ~3MB (single text string),
+        freed immediately after extraction. Handles infinite URLs at 128MB.
+        """
+        text = await self._stream_text(url)
+        if not text:
+            return {'profile_fields': [], 'meta': {}}
+        fields = _extract_profile_fields_from_html(text)
+        meta = _extract_meta_from_html(text, self.cookies.get('c_user', ''))
+        del text
+        return {'profile_fields': fields, 'meta': meta}
 
     async def resolve_entity(self, url: str) -> dict:
-        """Resolve entity type/id from a URL. Returns compact dict, not full HTML.
-
-        Returns: {type, id, meta} where meta has name, gender, verified, etc.
-        """
-        try:
-            headers = get_document_headers(user_agent=self._user_agent)
-            self._total_requests += 1
-            resp = await self._client.get(url, headers=headers)
-            if resp.status_code != 200:
-                return {"type": TargetType.UNKNOWN, "id": None, "meta": {}}
-            self.proxy_manager.on_success()
-            text = resp.text
-            entity_type = detect_entity_type_from_html(text)
-            entity_id = None
-            c_user = self.cookies.get("c_user", "")
-            patterns_map = {
-                TargetType.PAGE: [r'"pageID"\s*:\s*"(\d+)"', r'"page_id"\s*:\s*"(\d+)"'],
-                TargetType.PROFILE: [r'"userID"\s*:\s*"(\d+)"', r'"profile_id"\s*:\s*"(\d+)"'],
-                TargetType.GROUP: [r'"groupID"\s*:\s*"(\d+)"', r'"group_id"\s*:\s*"(\d+)"'],
-            }
-            patterns = patterns_map.get(entity_type, [])
-            patterns.extend([r'"entity_id"\s*:\s*"(\d+)"', r'"ownerID"\s*:\s*"(\d+)"', r'"actorID"\s*:\s*"(\d+)"'])
-            for p in patterns:
-                m = re.search(p, text)
-                if m and m.group(1) != c_user:
-                    entity_id = m.group(1)
-                    break
-            # Extract compact metadata + profile_fields (if any on this page)
-            meta = _extract_meta_from_html(text, c_user)
-            fields = _extract_profile_fields_from_html(text)
-            log.info(f"🔍 Resolved: type={entity_type}, id={entity_id}")
-            del text  # Free the big HTML string
-            return {"type": entity_type, "id": entity_id, "meta": meta, "profile_fields": fields}
-        except Exception as e:
-            log.error(f"Error resolving entity: {e}")
-            return {"type": TargetType.UNKNOWN, "id": None, "meta": {}}
+        """Resolve entity type/id from a URL via streaming. Returns compact dict."""
+        text = await self._stream_text(url)
+        if not text:
+            return {'type': TargetType.UNKNOWN, 'id': None, 'meta': {}, 'profile_fields': []}
+        entity_type = detect_entity_type_from_html(text)
+        entity_id = None
+        c_user = self.cookies.get('c_user', '')
+        patterns_map = {
+            TargetType.PAGE: [r'"pageID"\s*:\s*"(\d+)"', r'"page_id"\s*:\s*"(\d+)"'],
+            TargetType.PROFILE: [r'"userID"\s*:\s*"(\d+)"', r'"profile_id"\s*:\s*"(\d+)"'],
+            TargetType.GROUP: [r'"groupID"\s*:\s*"(\d+)"', r'"group_id"\s*:\s*"(\d+)"'],
+        }
+        patterns = patterns_map.get(entity_type, [])
+        patterns.extend([r'"entity_id"\s*:\s*"(\d+)"', r'"ownerID"\s*:\s*"(\d+)"', r'"actorID"\s*:\s*"(\d+)"'])
+        for p in patterns:
+            m = re.search(p, text)
+            if m and m.group(1) != c_user:
+                entity_id = m.group(1)
+                break
+        meta = _extract_meta_from_html(text, c_user)
+        fields = _extract_profile_fields_from_html(text)
+        log.info(f"\U0001f50d Resolved: type={entity_type}, id={entity_id}")
+        del text
+        return {'type': entity_type, 'id': entity_id, 'meta': meta, 'profile_fields': fields}
 
     async def resolve_entity_type_and_id(self, url: str) -> tuple[str, Optional[str], Optional[str]]:
-        """Legacy method — now returns None for HTML to save memory."""
+        """Legacy method — returns None for HTML to save memory."""
         result = await self.resolve_entity(url)
-        return result["type"], result.get("id"), None
+        return result['type'], result.get('id'), None
 
     async def auto_fetch_fb_dtsg(self) -> Optional[str]:
         log.info("🔑 Auto-fetching fb_dtsg token...")
@@ -250,17 +251,24 @@ _INVALID_NAMES = {
 def _extract_profile_fields_from_html(html: str) -> list[dict]:
     """Extract all profile_fields nodes from embedded <script> JSON.
 
-    Returns a small list of dicts (~1-5KB) instead of holding the full 2-5MB HTML.
-    Uses two strategies: structured JSON parse, then regex fallback.
+    Returns a small list of dicts (~1-5KB).
+    Three strategies, each progressively more tolerant:
+      1. JSON parse of profile_fields.nodes array (handles __typename)
+      2. Individual field_type regex with robust text extraction
+      3. Direct field search for specific known patterns
     """
     all_fields = []
 
-    # Strategy 1: Find "profile_fields":{"nodes":[...]} and parse the array
-    for m in re.finditer(r'"profile_fields"\s*:\s*\{\s*"nodes"\s*:\s*\[', html):
+    # Strategy 1: Find "profile_fields":{..."nodes":[...]} and parse the array
+    # FIXED: handles __typename and other keys between { and "nodes" by using
+    # [^[]* instead of \s* to skip past "__typename":"ProfileFieldConnection",
+    for m in re.finditer(r'"profile_fields"\s*:\s*\{[^\[]*"nodes"\s*:\s*\[', html):
         start = m.end() - 1  # position of '['
         depth = 0
         i = start
-        limit = min(len(html), start + 80000)
+        # FIXED: increased from 80KB to 500KB — large profiles with many fields
+        # (birthday, family×7, quotes, etc.) easily exceed 80KB
+        limit = min(len(html), start + 500000)
         while i < limit:
             if html[i] == '[':
                 depth += 1
@@ -275,26 +283,44 @@ def _extract_profile_fields_from_html(html: str) -> list[dict]:
                     break
             i += 1
 
-    # Strategy 2: Regex fallback for field_type + title pairs
+    # Strategy 2: If Strategy 1 found nothing, do field_type regex with robust text extraction
     if not all_fields:
         for m in re.finditer(r'"field_type"\s*:\s*"([^"]+)"', html):
             field_type = m.group(1)
+            # Look 500 chars before and 5000 chars after for associated data
             ctx_start = max(0, m.start() - 500)
-            ctx_end = min(len(html), m.end() + 2000)
+            ctx_end = min(len(html), m.end() + 5000)
             context = html[ctx_start:ctx_end]
 
-            title_m = re.search(r'"title"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]+)"', context)
-            text_m = re.search(r'"text_content"\s*:\s*\{[^}]*"text"\s*:\s*"([^"]+)"', context)
+            # FIXED: Use (?:[^{}]|\{[^{}]*\})* instead of [^}]* to handle nested
+            # objects like {"delight_ranges":[...],"text":"value"}
+            title_m = re.search(
+                r'"title"\s*:\s*\{(?:[^{}]|\{[^{}]*\})*?"text"\s*:\s*"([^"]+)"',
+                context
+            )
+            text_m = re.search(
+                r'"text_content"\s*:\s*\{(?:[^{}]|\{[^{}]*\})*?"text"\s*:\s*"([^"]+)"',
+                context
+            )
+            # Also try subtitle
+            sub_m = re.search(
+                r'"subtitle"\s*:\s*\{(?:[^{}]|\{[^{}]*\})*?"text"\s*:\s*"([^"]+)"',
+                context
+            )
 
             title_text = title_m.group(1) if title_m else ''
             content_text = text_m.group(1) if text_m else ''
+            sub_text = sub_m.group(1) if sub_m else ''
 
             if title_text or content_text:
-                all_fields.append({
+                f = {
                     'field_type': field_type,
                     'title': {'text': title_text},
                     'text_content': {'text': content_text} if content_text else None,
-                })
+                }
+                if sub_text:
+                    f['subtitle'] = {'text': sub_text}
+                all_fields.append(f)
 
     return all_fields
 
@@ -433,4 +459,30 @@ def _extract_meta_from_html(html: str, c_user: str = '') -> dict:
     m = re.search(r'"longitude"\s*:\s*([\d.-]+)', html)
     if m: meta['longitude'] = float(m.group(1))
 
+    # Fallbacks for personal details if profile_fields misses them
+    m = re.search(r'"text"\s*:\s*"([^"]+)"(?:[^{}]+|{[^{}]*})*"field_type"\s*:\s*"(?:birthday|date_of_birth)"', html)
+    if not m:
+        m = re.search(r'"field_type"\s*:\s*"(?:birthday|date_of_birth)"(?:[^{}]+|{[^{}]*})*"text"\s*:\s*"([^"]+)"', html)
+    if m:
+        meta['birthday'] = m.group(1)
+
+    m = re.search(r'"text"\s*:\s*"([^"]+)"(?:[^{}]+|{[^{}]*})*"field_type"\s*:\s*"relationship_status"', html)
+    if not m:
+        m = re.search(r'"field_type"\s*:\s*"relationship_status"(?:[^{}]+|{[^{}]*})*"text"\s*:\s*"([^"]+)"', html)
+    if m:
+        meta['relationship_status'] = m.group(1)
+
+    m = re.search(r'"text"\s*:\s*"([^"]+)"(?:[^{}]+|{[^{}]*})*"field_type"\s*:\s*"email"', html)
+    if not m:
+        m = re.search(r'"field_type"\s*:\s*"email"(?:[^{}]+|{[^{}]*})*"text"\s*:\s*"([^"]+)"', html)
+    if m and '@' in m.group(1):
+        meta['email'] = m.group(1)
+
+    m = re.search(r'"text"\s*:\s*"([^"]+)"(?:[^{}]+|{[^{}]*})*"field_type"\s*:\s*"phone"', html)
+    if not m:
+        m = re.search(r'"field_type"\s*:\s*"phone"(?:[^{}]+|{[^{}]*})*"text"\s*:\s*"([^"]+)"', html)
+    if m:
+        meta['phone'] = m.group(1)
+
     return meta
+

@@ -1,4 +1,4 @@
-"""Profile scraper — memory-efficient, no full HTML in memory.
+"""Profile scraper — memory-efficient, handles infinite URLs at 128MB RAM.
 
 Uses engine.fetch_and_extract() which returns only the tiny JSON data
 (profile_fields + meta) instead of the full 2-5MB HTML page.
@@ -45,16 +45,13 @@ class ProfileScraper:
         meta = data.get('meta', {})
         fields = data.get('profile_fields', [])
 
-        # Apply metadata
         self._apply_meta(meta, profile)
-        # Apply any profile_fields from main page
         if fields:
             self._apply_fields(fields, profile)
-        # Classify
         self._classify(meta, profile)
         await self.rate_limiter.on_request_complete()
 
-        # Step 2: Scrape about sections (only compact data returned)
+        # Step 2: Scrape about sections (only compact data returned per section)
         skip = ('Locked Profile', 'Deactivated Profile', 'Unavailable Profile')
         if self.scrape_about and profile.profile_type not in skip:
             await self._scrape_about_sections(profile)
@@ -67,6 +64,8 @@ class ProfileScraper:
             profile.name = meta['name']
         if meta.get('id') and not profile.user_id:
             profile.user_id = meta['id']
+        if meta.get('username') and not profile.username:
+            profile.username = meta['username']
         if meta.get('profile_picture_url'):
             profile.profile_picture_url = meta['profile_picture_url']
         if meta.get('cover_photo_url'):
@@ -79,10 +78,15 @@ class ProfileScraper:
             profile.friends_count = meta['friend_count']
         if meta.get('follower_count'):
             profile.followers_count = meta['follower_count']
+        # Also extract birthday/relationship from meta if present
+        if meta.get('birthday') and not profile.birthday:
+            profile.birthday = meta['birthday']
+        if meta.get('relationship_status') and not profile.relationship_status:
+            profile.relationship_status = meta['relationship_status']
 
     def _classify(self, meta: dict, profile: ProfileData):
         status = meta.get('status', '')
-        if status == 'deactivated' or status == 'unavailable':
+        if status in ('deactivated', 'unavailable'):
             profile.profile_type = 'Deactivated Profile'
         elif status == 'locked':
             profile.profile_type = 'Locked Profile'
@@ -107,14 +111,18 @@ class ProfileScraper:
         for section_key in ABOUT_SECTIONS:
             if profile.user_id and profile.user_id.isdigit():
                 url = f'https://www.facebook.com/profile.php?id={profile.user_id}&sk={section_key}'
-            else:
+            elif profile.username:
                 url = f'https://www.facebook.com/{profile.username}/{section_key}'
+            else:
+                continue
             try:
-                # Returns ~5KB dict, NOT 2-5MB HTML
                 result = await self.engine.fetch_and_extract(url)
                 fields = result.get('profile_fields', [])
+                meta = result.get('meta', {})
                 if fields:
                     self._apply_fields(fields, profile)
+                # Also apply meta from section pages (catches birthday, etc.)
+                self._apply_meta(meta, profile)
                 await self.rate_limiter.on_request_complete()
                 await self.rate_limiter.section_delay()
             except Exception as e:
@@ -130,27 +138,39 @@ class ProfileScraper:
             if not value:
                 continue
 
-            if ft == 'bio' and not profile.bio:
+            # ---- Bio / Intro ----
+            if ft in ('bio', 'about') and not profile.bio:
                 profile.bio = value
             elif ft == 'intro' and not profile.intro:
                 profile.intro = value
+
+            # ---- Location ----
             elif ft == 'current_city' and not profile.current_city:
                 profile.current_city = value
             elif ft == 'hometown' and not profile.hometown:
                 profile.hometown = value
-            elif ft == 'birthday' and not profile.birthday:
+            elif ft in ('travel', 'places_lived'):
+                if value not in profile.places_lived:
+                    profile.places_lived.append(value)
+
+            # ---- Birthday ----
+            elif ft in ('birthday', 'date', 'birth_date', 'date_of_birth') and not profile.birthday:
                 profile.birthday = value
-            elif ft == 'relationship_status':
+
+            # ---- Relationship ----
+            elif ft in ('relationship_status', 'relationship', 'status'):
                 if not profile.relationship_status:
                     profile.relationship_status = value
-                    if content_text and content_text != value:
+                    if content_text and content_text != value and content_text != title_text:
                         profile.relationship_status += f' — {_unescape(content_text)}'
             elif ft == 'significant_other' and not profile.significant_other:
                 profile.significant_other = value
-            elif ft == 'family_member':
-                relationship = _extract_relationship(field, content_text, value)
-                if value and not any(f.name == value for f in profile.family_members):
-                    profile.family_members.append(FamilyMember(name=value, relationship=relationship))
+
+            # ---- Family ----
+            elif ft in ('family_member', 'family'):
+                _add_family_member(field, value, content_text, profile)
+
+            # ---- Personal info ----
             elif ft == 'gender' and not profile.gender:
                 profile.gender = value
             elif ft == 'languages':
@@ -159,40 +179,42 @@ class ProfileScraper:
                         lang = lang.strip()
                         if lang and lang not in profile.languages:
                             profile.languages.append(lang)
-            elif ft == 'favorite_quotes' and not profile.favorite_quotes:
+            elif ft in ('favorite_quotes', 'quotes') and not profile.favorite_quotes:
                 profile.favorite_quotes = value
             elif ft == 'interested_in' and not profile.interested_in:
                 profile.interested_in = value
-            elif ft == 'political_views' and not profile.political_views:
+            elif ft in ('political_views', 'political') and not profile.political_views:
                 profile.political_views = value
-            elif ft == 'religious_views' and not profile.religious_views:
+            elif ft in ('religious_views', 'religion', 'religious') and not profile.religious_views:
                 profile.religious_views = value
+
+            # ---- Work ----
             elif ft == 'work':
-                company = value
-                position = _unescape(content_text) if content_text and content_text != company else ''
-                if company and not any(w.company == company for w in profile.work):
-                    profile.work.append(WorkExperience(company=company, position=position))
+                _add_work(value, content_text, profile)
+
+            # ---- Education ----
             elif ft == 'education':
-                school = value
-                concentration = _unescape(content_text) if content_text and content_text != school else ''
-                if school and not any(e.school == school for e in profile.education):
-                    profile.education.append(Education(school=school, concentration=concentration))
+                _add_education(value, content_text, profile)
+
+            # ---- Contact ----
             elif ft == 'website':
                 if value not in profile.websites:
                     profile.websites.append(value)
-            elif ft == 'screenname':
+            elif ft in ('screenname', 'social_link'):
                 if value not in profile.social_links and 'facebook.com' not in value:
                     profile.social_links.append(value)
-            elif ft == 'phone':
+            elif ft in ('phone', 'phone_number', 'mobile_phone'):
                 if value not in profile.phone_numbers:
                     profile.phone_numbers.append(value)
-            elif ft in ('email_address', 'email'):
+            elif ft in ('email_address', 'email', 'contact_email'):
                 if value not in profile.emails and '@' in value:
                     profile.emails.append(value)
+
+            # ---- Other ----
             elif ft == 'name_pronunciation':
                 extra = f'Pronunciation: {value}'
                 profile.intro = f'{profile.intro}\n{extra}' if profile.intro else extra
-            elif ft == 'other_names':
+            elif ft in ('other_names', 'nickname', 'maiden_name', 'alternate_name'):
                 extra = f'Other name: {value}'
                 if not profile.intro:
                     profile.intro = extra
@@ -200,18 +222,73 @@ class ProfileScraper:
                     profile.intro += f'\n{extra}'
                 else:
                     profile.intro += f', {value}'
-            elif ft == 'category':
-                if not profile.bio:
-                    profile.bio = value
+            elif ft == 'category' and not profile.bio:
+                profile.bio = value
             elif ft == 'impressum':
                 extra = f'Impressum: {value}'
                 profile.intro = f'{profile.intro}\n{extra}' if profile.intro else extra
-            elif ft in ('travel', 'places_lived'):
-                if value not in profile.places_lived:
-                    profile.places_lived.append(value)
             elif ft == 'directory_item':
                 if value not in profile.life_events:
                     profile.life_events.append(value)
+
+
+def _add_family_member(field: dict, name: str, content_text: str, profile: ProfileData):
+    """Extract family member with relationship from various JSON structures."""
+    relationship = ''
+    # Try list_item_groups first (grouped family entries)
+    if isinstance(field.get('list_item_groups'), list):
+        for group in field['list_item_groups']:
+            if isinstance(group, dict):
+                for item in group.get('list_items', []):
+                    if isinstance(item, dict):
+                        tc = item.get('text_content')
+                        if isinstance(tc, dict):
+                            relationship = tc.get('text', '')
+    # Try subtitle
+    if not relationship:
+        subtitle = field.get('subtitle')
+        if isinstance(subtitle, dict):
+            relationship = subtitle.get('text', '')
+    # Try text_content as relationship
+    if not relationship and content_text and content_text != name:
+        relationship = _unescape(content_text)
+    # Add if not duplicate
+    if name and not any(f.name == name for f in profile.family_members):
+        profile.family_members.append(FamilyMember(name=name, relationship=relationship))
+
+
+def _add_work(value: str, content_text: str, profile: ProfileData):
+    """Parse work entry — handles 'Position at Company' format."""
+    company = value
+    position = ''
+    # Parse 'Manager at Company' or 'Former Manager at Company'
+    if ' at ' in value:
+        parts = value.split(' at ', 1)
+        raw_position = parts[0].strip()
+        company = parts[1].strip()
+        # Remove 'Former ' prefix from position
+        position = re.sub(r'^Former\s+', '', raw_position)
+    elif content_text and content_text != value:
+        position = _unescape(content_text)
+    if company and not any(w.company == company for w in profile.work):
+        profile.work.append(WorkExperience(company=company, position=position))
+
+
+def _add_education(value: str, content_text: str, profile: ProfileData):
+    """Parse education — handles 'Studied X at Y', 'Went to Y' formats."""
+    school = value
+    concentration = ''
+    if ' at ' in value:
+        parts = value.split(' at ', 1)
+        raw = parts[0].strip()
+        school = parts[1].strip()
+        concentration = re.sub(r'^Studied\s+', '', raw)
+    elif value.startswith('Went to '):
+        school = value[len('Went to '):].strip()
+    elif content_text and content_text != value:
+        concentration = _unescape(content_text)
+    if school and not any(e.school == school for e in profile.education):
+        profile.education.append(Education(school=school, concentration=concentration))
 
 
 def _get_field_texts(field: dict) -> tuple[str, str]:
@@ -225,22 +302,12 @@ def _get_field_texts(field: dict) -> tuple[str, str]:
     tc = field.get('text_content')
     if isinstance(tc, dict) and tc:
         content_text = tc.get('text', '')
+    # Also check subtitle as potential text_content
+    if not content_text:
+        sub = field.get('subtitle')
+        if isinstance(sub, dict):
+            content_text = sub.get('text', '')
     return title_text, content_text
-
-
-def _extract_relationship(field: dict, content_text: str, name: str) -> str:
-    relationship = ''
-    if isinstance(field.get('list_item_groups'), list):
-        for group in field['list_item_groups']:
-            if isinstance(group, dict):
-                for item in group.get('list_items', []):
-                    if isinstance(item, dict):
-                        tc = item.get('text_content')
-                        if isinstance(tc, dict):
-                            relationship = tc.get('text', '')
-    if not relationship and content_text and content_text != name:
-        relationship = content_text
-    return relationship
 
 
 def _unescape(text: str) -> str:
