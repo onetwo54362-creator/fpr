@@ -6,6 +6,7 @@ Uses profile_fields JSON when available, plus regex fallbacks.
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import re
@@ -55,6 +56,9 @@ class GroupScraper:
             self._extract_basic(html, group)
             self._classify_group(html, group)
             await self.rate_limiter.on_request_complete()
+        del html
+        del initial_html
+        gc.collect()
 
         # Step 2: About page
         if self.scrape_about and group.group_type != 'Unavailable Group':
@@ -244,6 +248,8 @@ class GroupScraper:
                 self._extract_basic(html, group)
                 # Also try profile_fields extraction
                 self._extract_profile_fields(html, group)
+                del html  # Free memory immediately
+                gc.collect()
                 await self.rate_limiter.on_request_complete()
         except Exception as e:
             log.warning(f'  \u26a0\ufe0f Failed group about: {e}')

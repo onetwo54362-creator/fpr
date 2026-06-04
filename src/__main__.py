@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 
 from apify import Actor
@@ -131,18 +132,24 @@ async def main():
                         url=clean_url, username=entity_id, user_id=entity_id if entity_id.isdigit() else "",
                         initial_html=html_content or "",
                     )
+                    html_content = None  # Free memory
                     await dataset.push_data(profile.to_dataset_dict())
                     all_profiles.append(profile)
                     log.info(f"  ✅ Profile: {profile.name}")
+                    del profile
+                    gc.collect()
 
                 elif target_type == TargetType.GROUP:
                     group = await group_scraper.scrape(
                         url=clean_url, group_id=entity_id,
                         initial_html=html_content or "",
                     )
+                    html_content = None
                     await dataset.push_data(group.to_dataset_dict())
                     all_groups.append(group)
                     log.info(f"  ✅ Group: {group.name}")
+                    del group
+                    gc.collect()
 
                 elif target_type == TargetType.PAGE:
                     page = await page_scraper.scrape(
@@ -150,9 +157,12 @@ async def main():
                         username=entity_id if not entity_id.isdigit() else "",
                         initial_html=html_content or "",
                     )
+                    html_content = None
                     await dataset.push_data(page.to_dataset_dict())
                     all_pages.append(page)
                     log.info(f"  ✅ Page: {page.name}")
+                    del page
+                    gc.collect()
 
                 else:
                     # Last resort: treat as profile
@@ -161,8 +171,11 @@ async def main():
                         url=clean_url, username=entity_id,
                         initial_html=html_content or "",
                     )
+                    html_content = None
                     await dataset.push_data(profile.to_dataset_dict())
                     all_profiles.append(profile)
+                    del profile
+                    gc.collect()
 
             except Exception as e:
                 log.error(f"  ❌ Error processing {url}: {e}", exc_info=True)

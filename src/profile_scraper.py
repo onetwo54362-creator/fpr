@@ -7,6 +7,7 @@ JSON in <script type="application/json"> tags. Each section contains
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import re
@@ -27,14 +28,17 @@ INVALID_NAMES = {
     'About', 'Intro', 'Mentions',
 }
 
-# Sections to crawl for about data
+# Essential sections — reduced from 16 to 8 to save memory on Apify (128MB)
+# Each section fetch is a full ~2-5MB HTML page
 ABOUT_SECTIONS = [
-    'directory_intro', 'directory_category', 'directory_personal_details',
-    'directory_basic_info', 'directory_links', 'directory_specialties',
-    'directory_offers', 'directory_work', 'directory_education',
-    'directory_activites', 'directory_interests', 'directory_travel',
-    'directory_contact_info', 'directory_privacy_and_legal_info',
-    'directory_names', 'directory_communities',
+    'directory_personal_details',   # city, hometown, birthday, family, gender, languages, quotes
+    'directory_work',               # work history
+    'directory_education',          # education history
+    'directory_contact_info',       # phone, email, social media, messenger
+    'directory_links',              # websites
+    'directory_basic_info',         # relationship, religious/political views
+    'directory_names',              # pronunciation, other names
+    'directory_privacy_and_legal_info',  # impressum
 ]
 
 
@@ -58,6 +62,10 @@ class ProfileScraper:
             self._extract_basic(html, profile)
             self._classify_profile(html, profile)
             await self.rate_limiter.on_request_complete()
+        # Free main page HTML immediately
+        del html
+        del initial_html
+        gc.collect()
 
         # Step 2: Scrape all about sections
         skip_types = ('Locked Profile', 'Deactivated Profile', 'Unavailable Profile')
@@ -198,6 +206,8 @@ class ProfileScraper:
                 html = await self.engine.fetch_page_html(url)
                 if html:
                     self._extract_profile_fields(html, profile, section_key)
+                    del html  # Free memory immediately
+                    gc.collect()
                     await self.rate_limiter.on_request_complete()
                 await self.rate_limiter.section_delay()
             except Exception as e:

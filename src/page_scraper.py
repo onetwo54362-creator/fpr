@@ -6,6 +6,7 @@ JSON in <script type="application/json"> tags, same approach as profile_scraper.
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import re
@@ -25,12 +26,14 @@ INVALID_NAMES = {
 }
 
 ABOUT_SECTIONS = [
-    'directory_intro', 'directory_category', 'directory_personal_details',
-    'directory_basic_info', 'directory_links', 'directory_specialties',
-    'directory_offers', 'directory_work', 'directory_education',
-    'directory_activites', 'directory_interests', 'directory_travel',
-    'directory_contact_info', 'directory_privacy_and_legal_info',
-    'directory_names', 'directory_communities',
+    'directory_personal_details',
+    'directory_work',
+    'directory_education',
+    'directory_contact_info',
+    'directory_links',
+    'directory_basic_info',
+    'directory_names',
+    'directory_privacy_and_legal_info',
 ]
 
 
@@ -52,6 +55,9 @@ class PageScraper:
             self._extract_basic(html, page)
             self._classify_page(html, page)
             await self.rate_limiter.on_request_complete()
+        del html
+        del initial_html
+        gc.collect()
 
         if self.scrape_about and page.page_type not in ('Unavailable Page', 'Unpublished Page'):
             await self._scrape_all_about_sections(page)
@@ -226,6 +232,8 @@ class PageScraper:
                 html = await self.engine.fetch_page_html(url)
                 if html:
                     self._extract_profile_fields(html, page, section_key)
+                    del html  # Free memory immediately
+                    gc.collect()
                     await self.rate_limiter.on_request_complete()
                 await self.rate_limiter.section_delay()
             except Exception as e:
