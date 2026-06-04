@@ -1,204 +1,91 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <title>FB About Mapper</title>
+  <meta charset="UTF-8">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      width: 420px;
-      min-height: 300px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0a0a1a;
-      color: #e0e0e0;
-      padding: 16px;
-    }
-    .header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 16px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid rgba(99, 102, 241, 0.3);
-    }
-    .header h1 {
-      font-size: 16px;
-      font-weight: 700;
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-    .header .badge {
-      font-size: 10px;
-      background: rgba(99, 102, 241, 0.2);
-      color: #a5b4fc;
-      padding: 2px 8px;
-      border-radius: 10px;
-      border: 1px solid rgba(99, 102, 241, 0.3);
-    }
-    .status-bar {
-      background: rgba(30, 30, 50, 0.8);
-      border: 1px solid rgba(99, 102, 241, 0.2);
-      border-radius: 8px;
-      padding: 10px 12px;
-      margin-bottom: 12px;
-      font-size: 12px;
-    }
-    .status-bar .label { color: #9ca3af; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
-    .status-bar .value { color: #e0e0e0; margin-top: 2px; word-break: break-all; }
-    .status-bar.error .value { color: #f87171; }
-    .status-bar.success .value { color: #34d399; }
-
-    .btn {
-      width: 100%;
-      padding: 10px 16px;
-      border: none;
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
-      margin-bottom: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-    }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    .btn-primary {
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
-      color: white;
-    }
-    .btn-primary:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
-    .btn-secondary {
-      background: rgba(30, 30, 50, 0.8);
-      color: #a5b4fc;
-      border: 1px solid rgba(99, 102, 241, 0.3);
-    }
-    .btn-secondary:hover:not(:disabled) { background: rgba(99, 102, 241, 0.15); }
-    .btn-danger {
-      background: rgba(239, 68, 68, 0.15);
-      color: #f87171;
-      border: 1px solid rgba(239, 68, 68, 0.3);
-    }
-    .btn-danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.25); }
-
-    .stats {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-    .stat-card {
-      background: rgba(30, 30, 50, 0.6);
-      border: 1px solid rgba(99, 102, 241, 0.15);
-      border-radius: 8px;
-      padding: 8px;
-      text-align: center;
-    }
-    .stat-card .num { font-size: 20px; font-weight: 700; color: #a5b4fc; }
-    .stat-card .label { font-size: 9px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; }
-
-    .section-list {
-      max-height: 200px;
-      overflow-y: auto;
-      margin-bottom: 12px;
-    }
-    .section-item {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
-      border-radius: 6px;
-      font-size: 12px;
-      margin-bottom: 2px;
-    }
-    .section-item:hover { background: rgba(99, 102, 241, 0.1); }
-    .section-item .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-    .section-item .dot.found { background: #34d399; }
-    .section-item .dot.empty { background: #6b7280; }
-    .section-item .name { flex: 1; color: #d1d5db; }
-    .section-item .count { color: #6b7280; font-size: 10px; }
-
-    .progress-bar {
-      width: 100%;
-      height: 4px;
-      background: rgba(30, 30, 50, 0.8);
-      border-radius: 4px;
-      margin-bottom: 12px;
-      overflow: hidden;
-    }
-    .progress-bar .fill {
-      height: 100%;
-      background: linear-gradient(90deg, #6366f1, #8b5cf6);
-      border-radius: 4px;
-      transition: width 0.3s;
-    }
-
-    #log {
-      background: rgba(15, 15, 30, 0.9);
-      border: 1px solid rgba(99, 102, 241, 0.15);
-      border-radius: 8px;
-      padding: 8px 10px;
-      font-family: 'JetBrains Mono', 'Fira Code', monospace;
-      font-size: 10px;
-      color: #9ca3af;
-      max-height: 120px;
-      overflow-y: auto;
-      margin-bottom: 12px;
-      display: none;
-    }
-    #log.visible { display: block; }
-    #log .entry { padding: 1px 0; }
-    #log .entry.info { color: #60a5fa; }
-    #log .entry.success { color: #34d399; }
-    #log .entry.warn { color: #fbbf24; }
-    #log .entry.error { color: #f87171; }
+    body { width: 380px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e6e6fa; }
+    .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 16px; text-align: center; }
+    .header h1 { font-size: 16px; font-weight: 700; color: white; }
+    .header .version { font-size: 11px; color: rgba(255,255,255,0.7); margin-top: 2px; }
+    .info-bar { display: flex; justify-content: space-around; padding: 10px 12px; background: #16213e; border-bottom: 1px solid #0f3460; }
+    .info-item { text-align: center; }
+    .info-item .label { font-size: 10px; color: #8888aa; text-transform: uppercase; }
+    .info-item .value { font-size: 18px; font-weight: 700; color: #667eea; }
+    .section { padding: 10px 12px; }
+    .section-title { font-size: 11px; font-weight: 600; color: #8888aa; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 0.5px; }
+    .btn { display: block; width: 100%; padding: 10px 14px; margin-bottom: 6px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s; text-align: left; }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .btn-primary { background: linear-gradient(135deg, #667eea, #764ba2); color: white; }
+    .btn-scan { background: linear-gradient(135deg, #f093fb, #f5576c); color: white; }
+    .btn-download { background: linear-gradient(135deg, #4facfe, #00f2fe); color: #1a1a2e; }
+    .btn-secondary { background: #16213e; color: #e6e6fa; border: 1px solid #0f3460; }
+    .btn-warn { background: linear-gradient(135deg, #fa709a, #fee140); color: #1a1a2e; }
+    .btn .icon { margin-right: 6px; }
+    .status { padding: 8px 12px; background: #16213e; border-top: 1px solid #0f3460; font-size: 11px; color: #8888aa; text-align: center; }
+    .log-area { max-height: 200px; overflow-y: auto; background: #0d1117; border-radius: 6px; padding: 8px; font-family: 'Consolas', monospace; font-size: 10px; color: #8b949e; margin: 6px 0; display: none; }
+    .log-area.visible { display: block; }
+    .graphql-summary { background: #16213e; border-radius: 6px; padding: 8px; margin: 6px 0; font-size: 11px; }
+    .graphql-summary .call { padding: 4px 0; border-bottom: 1px solid #0f3460; }
+    .graphql-summary .call:last-child { border-bottom: none; }
+    .graphql-summary .call .name { color: #4facfe; font-weight: 600; }
+    .graphql-summary .call .doc-id { color: #8888aa; font-family: monospace; font-size: 10px; }
+    .graphql-summary .call .fields { color: #4ade80; }
+    .dtsg-box { background: #0f3460; border-radius: 6px; padding: 8px; margin: 6px 0; font-family: monospace; font-size: 10px; word-break: break-all; color: #4facfe; }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>🔍 FB About Mapper</h1>
-    <span class="badge">v1.0</span>
+    <div class="version">v2.0 — GraphQL Interceptor</div>
   </div>
 
-  <div id="status" class="status-bar">
-    <div class="label">Current Page</div>
-    <div class="value" id="pageUrl">Checking...</div>
+  <div class="info-bar">
+    <div class="info-item">
+      <div class="label">Page</div>
+      <div class="value" id="entityName">—</div>
+    </div>
+    <div class="info-item">
+      <div class="label">GraphQL Calls</div>
+      <div class="value" id="graphqlCount">0</div>
+    </div>
+    <div class="info-item">
+      <div class="label">Fields</div>
+      <div class="value" id="fieldCount">0</div>
+    </div>
   </div>
 
-  <div class="stats" id="statsPanel" style="display:none;">
-    <div class="stat-card"><div class="num" id="statSections">0</div><div class="label">Sections</div></div>
-    <div class="stat-card"><div class="num" id="statFields">0</div><div class="label">Fields</div></div>
-    <div class="stat-card"><div class="num" id="statValues">0</div><div class="label">Values</div></div>
+  <div class="section">
+    <div class="section-title">Capture GraphQL</div>
+    <button class="btn btn-primary" id="btnScan"><span class="icon">⚡</span>Scan This Page (GraphQL + DOM)</button>
+    <button class="btn btn-scan" id="btnScanAll"><span class="icon">🔄</span>Scan ALL About Sections (Auto-Navigate)</button>
   </div>
 
-  <div class="progress-bar" id="progressBar" style="display:none;">
-    <div class="fill" id="progressFill" style="width:0%"></div>
+  <div id="dtsgSection" class="section" style="display:none">
+    <div class="section-title">🔑 Captured fb_dtsg</div>
+    <div class="dtsg-box" id="dtsgValue"></div>
   </div>
 
-  <div class="section-list" id="sectionList" style="display:none;"></div>
+  <div id="graphqlSection" class="section" style="display:none">
+    <div class="section-title">📡 Captured GraphQL Calls</div>
+    <div class="graphql-summary" id="graphqlSummary"></div>
+  </div>
 
-  <div id="log"></div>
+  <div class="section">
+    <div class="section-title">Export</div>
+    <button class="btn btn-download" id="btnDownload"><span class="icon">💾</span>Download GraphQL Map (JSON)</button>
+    <button class="btn btn-secondary" id="btnCopy"><span class="icon">📋</span>Copy JSON to Clipboard</button>
+  </div>
 
-  <button class="btn btn-primary" id="btnScan">
-    <span>⚡</span> Scan This About Page
-  </button>
-  <button class="btn btn-primary" id="btnScanAll" style="display:none;">
-    <span>🔄</span> Scan ALL About Sections (Auto-Navigate)
-  </button>
-  <button class="btn btn-secondary" id="btnExport" style="display:none;">
-    <span>📋</span> Copy JSON Map to Clipboard
-  </button>
-  <button class="btn btn-secondary" id="btnDownload" style="display:none;">
-    <span>💾</span> Download JSON Map
-  </button>
-  <button class="btn btn-secondary" id="btnToggleLog">
-    <span>📜</span> Toggle Log
-  </button>
-  <button class="btn btn-danger" id="btnHighlight" style="display:none;">
-    <span>🎨</span> Highlight Data Elements on Page
-  </button>
+  <div class="section">
+    <div class="section-title">Tools</div>
+    <button class="btn btn-secondary" id="btnHighlight"><span class="icon">🎨</span>Highlight Data Elements</button>
+    <button class="btn btn-secondary" id="btnClearLog"><span class="icon">🗑️</span>Clear GraphQL Log</button>
+    <button class="btn btn-secondary" id="btnToggleLog"><span class="icon">📜</span>Toggle Log</button>
+  </div>
+
+  <div class="log-area" id="logArea"></div>
+  <div class="status" id="status">Ready — navigate to a Facebook About page</div>
 
   <script src="popup.js"></script>
 </body>
