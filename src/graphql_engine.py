@@ -459,30 +459,7 @@ def _extract_meta_from_html(html: str, c_user: str = '') -> dict:
     m = re.search(r'"longitude"\s*:\s*([\d.-]+)', html)
     if m: meta['longitude'] = float(m.group(1))
 
-    # Fallbacks for personal details if profile_fields misses them
-    m = re.search(r'"text"\s*:\s*"([^"]+)"(?:[^{}]+|{[^{}]*})*"field_type"\s*:\s*"(?:birthday|date_of_birth)"', html)
-    if not m:
-        m = re.search(r'"field_type"\s*:\s*"(?:birthday|date_of_birth)"(?:[^{}]+|{[^{}]*})*"text"\s*:\s*"([^"]+)"', html)
-    if m:
-        meta['birthday'] = m.group(1)
-
-    m = re.search(r'"text"\s*:\s*"([^"]+)"(?:[^{}]+|{[^{}]*})*"field_type"\s*:\s*"relationship_status"', html)
-    if not m:
-        m = re.search(r'"field_type"\s*:\s*"relationship_status"(?:[^{}]+|{[^{}]*})*"text"\s*:\s*"([^"]+)"', html)
-    if m:
-        meta['relationship_status'] = m.group(1)
-
-    m = re.search(r'"text"\s*:\s*"([^"]+)"(?:[^{}]+|{[^{}]*})*"field_type"\s*:\s*"email"', html)
-    if not m:
-        m = re.search(r'"field_type"\s*:\s*"email"(?:[^{}]+|{[^{}]*})*"text"\s*:\s*"([^"]+)"', html)
-    if m and '@' in m.group(1):
-        meta['email'] = m.group(1)
-
-    m = re.search(r'"text"\s*:\s*"([^"]+)"(?:[^{}]+|{[^{}]*})*"field_type"\s*:\s*"phone"', html)
-    if not m:
-        m = re.search(r'"field_type"\s*:\s*"phone"(?:[^{}]+|{[^{}]*})*"text"\s*:\s*"([^"]+)"', html)
-    if m:
-        meta['phone'] = m.group(1)
-
+    # Fallbacks for personal details removed: they caused catastrophic backtracking
+    # across 5MB HTML strings. The profile_fields extractor already gets these reliably.
     return meta
 
