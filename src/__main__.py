@@ -5,6 +5,13 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
+import os
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 from apify import Actor
 
@@ -89,13 +96,19 @@ async def main():
         scrape_about = actor_input.get('scrapeAbout', True)
         excel_export = actor_input.get('excelExport', False)
 
-        proxy_config = actor_input.get('proxyConfiguration') or actor_input.get('proxy', {})
-        proxy_url = None
-        if proxy_config:
-            proxy_group = proxy_config.get('apifyProxyGroups', ['RESIDENTIAL'])
-            proxy_country = proxy_config.get('apifyProxyCountry', 'US')
-            grp = proxy_group[0] if proxy_group else 'RESIDENTIAL'
-            proxy_url = f"http://groups-{grp},country-{proxy_country}:@proxy.apify.com:8000"
+        # Support both 'proxyUrl' string and 'proxyConfiguration' object
+        proxy_url = actor_input.get('proxyUrl', '').strip() or None
+        if not proxy_url:
+            proxy_config = actor_input.get('proxyConfiguration') or actor_input.get('proxy', {})
+            if proxy_config:
+                proxy_group = proxy_config.get('apifyProxyGroups', ['RESIDENTIAL'])
+                proxy_country = proxy_config.get('apifyProxyCountry', 'US')
+                grp = proxy_group[0] if proxy_group else 'RESIDENTIAL'
+                proxy_password = os.environ.get('APIFY_PROXY_PASSWORD', '')
+                if proxy_password:
+                    proxy_url = f"http://groups-{grp},country-{proxy_country}:{proxy_password}@proxy.apify.com:8000"
+                else:
+                    proxy_url = f"http://groups-{grp},country-{proxy_country}:@proxy.apify.com:8000"
 
         proxy_manager = ProxyManager(proxy_url=proxy_url)
         rate_limiter = RateLimiter(
