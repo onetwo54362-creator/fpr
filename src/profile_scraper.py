@@ -6,6 +6,7 @@ Uses engine.fetch_and_extract() which returns only the tiny JSON data
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Optional
@@ -108,6 +109,7 @@ class ProfileScraper:
                 profile.profile_type = 'Limited Profile'
 
     async def _scrape_about_sections(self, profile: ProfileData):
+        urls_to_fetch = []
         for section_key in ABOUT_SECTIONS:
             if profile.user_id and profile.user_id.isdigit():
                 url = f'https://www.facebook.com/profile.php?id={profile.user_id}&sk={section_key}'
@@ -115,18 +117,40 @@ class ProfileScraper:
                 url = f'https://www.facebook.com/{profile.username}/{section_key}'
             else:
                 continue
-            try:
-                result = await self.engine.fetch_and_extract(url)
-                fields = result.get('profile_fields', [])
-                meta = result.get('meta', {})
-                if fields:
-                    self._apply_fields(fields, profile)
-                # Also apply meta from section pages (catches birthday, etc.)
-                self._apply_meta(meta, profile)
-                await self.rate_limiter.on_request_complete()
-                await self.rate_limiter.section_delay()
-            except Exception as e:
-                log.warning(f'  ⚠️ Failed {section_key}: {e}')
+            urls_to_fetch.append((section_key, url))
+
+        if not urls_to_fetch:
+            return
+
+        # Fetch sections concurrently but limit to 3 at a time to prevent OOM
+        sem = asyncio.Semaphore(3)
+
+        async def fetch_section(section_key, url):
+            async with sem:
+                try:
+                    result = await self.engine.fetch_and_extract(url)
+                    # Random small stagger to avoid completely simultaneous requests
+                    await asyncio.sleep(random.uniform(0.2, 0.8))
+                    return section_key, result
+                except Exception as e:
+                    log.warning(f'  ⚠️ Failed {section_key}: {e}')
+                    return section_key, None
+
+        import random
+        tasks = [asyncio.create_task(fetch_section(k, u)) for k, u in urls_to_fetch]
+        results = await asyncio.gather(*tasks)
+
+        for section_key, result in results:
+            if not result:
+                continue
+            fields = result.get('profile_fields', [])
+            meta = result.get('meta', {})
+            if fields:
+                self._apply_fields(fields, profile)
+            self._apply_meta(meta, profile)
+            
+        # Count this whole batch of about sections as 1 request for the rate limiter
+        await self.rate_limiter.on_request_complete()
 
     def _apply_fields(self, fields: list, profile: ProfileData):
         for field in fields:

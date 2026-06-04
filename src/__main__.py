@@ -16,7 +16,7 @@ from .page_scraper import PageScraper
 from .profile_scraper import ProfileScraper
 from .proxy_manager import ProxyManager
 from .rate_limiter import RateLimiter
-from .response_parser import parse_target_url
+from .response_parser import parse_target_url, parse_cookies
 
 try:
     from .excel_exporter import create_excel
@@ -30,16 +30,22 @@ async def main():
     async with Actor:
         actor_input = await Actor.get_input() or {}
 
-        # Parse cookies
+        # Parse cookies — supports Netscape, JSON array, JSON object, header string
         raw_cookies = actor_input.get('cookies', '')
         if isinstance(raw_cookies, str):
-            cookies = {}
-            for part in raw_cookies.split(';'):
-                if '=' in part:
-                    k, v = part.strip().split('=', 1)
-                    cookies[k.strip()] = v.strip()
-        else:
+            cookies = parse_cookies(raw_cookies)
+        elif isinstance(raw_cookies, dict):
             cookies = raw_cookies
+        else:
+            cookies = {}
+
+        if 'c_user' not in cookies:
+            log.error('❌ Cookie parsing failed — c_user not found. Check your cookie format.')
+            log.error(f'   Raw cookie length: {len(str(raw_cookies))} chars')
+            log.error('   Supported formats: Netscape, JSON array, JSON object, header string')
+            await Actor.fail(status_message='Cookie must contain c_user. Check format.')
+            return
+        log.info(f'🔑 Authenticated as user: {cookies.get("c_user")}')
 
         # Parse URLs — support both field names and formats
         urls = []
