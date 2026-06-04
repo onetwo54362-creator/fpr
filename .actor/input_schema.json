@@ -33,19 +33,6 @@
             "description": "Scrape detailed About section data.",
             "default": true
         },
-        "scrapeMembers": {
-            "title": "Scrape Group Members",
-            "type": "boolean",
-            "description": "For groups: scrape the member list.",
-            "default": false
-        },
-        "maxMembers": {
-            "title": "Max Members",
-            "type": "integer",
-            "description": "Max group members to scrape (0 = unlimited).",
-            "default": 100,
-            "minimum": 0
-        },
         "minBatchSize": {
             "title": "Min Batch Size",
             "type": "integer",

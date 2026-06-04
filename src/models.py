@@ -195,10 +195,8 @@ class GroupData:
             "visibility": self.visibility, "join_mode": self.join_mode,
             "member_count": self.member_count, "posts_per_day": self.posts_per_day,
             "posts_per_month": self.posts_per_month, "created_at": self.created_at,
-            "admins": [{"name": a.name, "user_id": a.user_id, "profile_url": a.profile_url, "role": a.role} for a in self.admins],
-            "moderators": [{"name": m.name, "user_id": m.user_id, "profile_url": m.profile_url} for m in self.moderators],
-            "members": [{"name": m.name, "user_id": m.user_id, "profile_url": m.profile_url, "role": m.role} for m in self.members],
-            "member_count_scraped": len(self.members),
+            "admins": [{"name": a.name, "role": a.role} for a in self.admins],
+            "moderators": [{"name": m.name, "role": m.role} for m in self.moderators],
             "rules": self.rules, "topics": self.topics,
             "location": self.location, "history": self.history, "scraped_at": self.scraped_at,
         }
@@ -208,7 +206,7 @@ class GroupData:
                 self.privacy, self.visibility, self.join_mode,
                 self.member_count, self.posts_per_day, self.posts_per_month, self.created_at,
                 "; ".join(a.to_str() for a in self.admins),
-                "; ".join(m.to_str() for m in self.moderators), len(self.members),
+                "; ".join(m.to_str() for m in self.moderators),
                 "\n".join(self.rules), "; ".join(self.topics),
                 self.location, self.history, self.cover_photo_url, self.scraped_at]
 
@@ -323,7 +321,7 @@ GROUP_EXCEL_HEADERS = [
     "Type", "Group Type", "Name", "Group ID", "Group URL", "Description",
     "Privacy", "Visibility", "Join Mode",
     "Member Count", "Posts/Day", "Posts/Month", "Created At",
-    "Admins", "Moderators", "Members Scraped",
+    "Admins", "Moderators",
     "Rules", "Topics", "Location", "History", "Cover Photo URL", "Scraped At",
 ]
 

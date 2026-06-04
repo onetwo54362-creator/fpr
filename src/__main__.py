@@ -32,8 +32,6 @@ async def main():
         cookie_input = actor_input.get("cookies", "")
         fb_dtsg_input = actor_input.get("fbDtsg", "")
         scrape_about = actor_input.get("scrapeAbout", True)
-        scrape_members = actor_input.get("scrapeMembers", False)
-        max_members = actor_input.get("maxMembers", 100)
         min_batch = actor_input.get("minBatchSize", 2)
         max_batch = actor_input.get("maxBatchSize", 5)
         min_cooldown = actor_input.get("minCooldownSeconds", 3)
@@ -93,8 +91,7 @@ async def main():
 
         # Initialize scrapers
         profile_scraper = ProfileScraper(engine, rate_limiter, scrape_about=scrape_about)
-        group_scraper = GroupScraper(engine, rate_limiter, scrape_about=scrape_about,
-                                     scrape_members=scrape_members, max_members=max_members)
+        group_scraper = GroupScraper(engine, rate_limiter, scrape_about=scrape_about)
         page_scraper = PageScraper(engine, rate_limiter, scrape_about=scrape_about)
 
         # =====================================================================
