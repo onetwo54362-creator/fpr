@@ -253,27 +253,28 @@ def _extract_profile_fields_from_dom(html: str) -> list[dict]:
     but omits the 'profile_fields' JSON payload.
     """
     fields = []
-    sections = re.findall(r'<section\b[^>]*>(.*?)</section>', html, re.DOTALL | re.IGNORECASE)
-    
-    ft_map = {
-        'bio': 'bio',
-        'intro': 'intro',
-        'category': 'category',
-        'location': 'current_city',
-        'places lived': 'current_city',
-        'hometown': 'hometown',
-        'birthday': 'birthday',
-        'status': 'relationship_status',
-        'family members': 'family_members',
-        'gender': 'gender',
-        'languages': 'languages',
-        'contact info': 'contact_info',
-        'basic info': 'basic_info',
-        'work': 'work',
-        'education': 'education'
-    }
+    # Use finditer instead of findall to save memory!
+    for sec_match in re.finditer(r'<section\b[^>]*>(.*?)</section>', html, re.DOTALL | re.IGNORECASE):
+        sec = sec_match.group(1)
+        
+        ft_map = {
+            'bio': 'bio',
+            'intro': 'intro',
+            'category': 'category',
+            'location': 'current_city',
+            'places lived': 'current_city',
+            'hometown': 'hometown',
+            'birthday': 'birthday',
+            'status': 'relationship_status',
+            'family members': 'family',
+            'gender': 'gender',
+            'languages': 'languages',
+            'contact info': 'contact_info',
+            'basic info': 'basic_info',
+            'work': 'work',
+            'education': 'education'
+        }
 
-    for sec in sections:
         m_h2 = re.search(r'<h2\b[^>]*>(.*?)</h2>', sec, re.IGNORECASE | re.DOTALL)
         if not m_h2:
             continue
@@ -288,7 +289,7 @@ def _extract_profile_fields_from_dom(html: str) -> list[dict]:
         ft = ft_map.get(header, header.replace(' ', '_'))
         
         # Family members usually alternate Name, Relationship
-        if ft == 'family_members':
+        if ft == 'family':
             for i in range(0, len(text_parts), 2):
                 if i < len(text_parts):
                     title = text_parts[i]

@@ -19,10 +19,13 @@ log = logging.getLogger(__name__)
 
 # Essential about sections (each is an HTTP request)
 ABOUT_SECTIONS = [
+    'directory_intro',
     'directory_personal_details',
     'directory_work',
     'directory_education',
+    'directory_places_lived',
     'directory_contact_info',
+    'directory_family_members',
     'directory_links',
     'directory_basic_info',
     'directory_names',
@@ -122,8 +125,8 @@ class ProfileScraper:
         if not urls_to_fetch:
             return
 
-        # Fetch sections concurrently but limit to 3 at a time to prevent OOM
-        sem = asyncio.Semaphore(3)
+        # Fetch sections sequentially to prevent OOM on 128MB RAM
+        sem = asyncio.Semaphore(1)
 
         async def fetch_section(section_key, url):
             async with sem:
