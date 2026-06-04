@@ -210,3 +210,6 @@ async def main():
         log.info(f"{'='*60}")
 
         await engine.close()
+
+
+asyncio.run(main())
